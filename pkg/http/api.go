@@ -16,7 +16,6 @@ limitations under the License.
 package http
 
 import (
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -42,8 +41,7 @@ func (e *Error) Unwrap() error { return e.Err }
 func (e *Error) IsNil() bool { return e.Err == nil && e.Message == "" }
 
 func apiKeyHeader(apiKey string) map[string]string {
-	encoded := base64.StdEncoding.EncodeToString([]byte(apiKey + ":"))
-	return map[string]string{"Authorization": fmt.Sprintf("Basic %s", encoded)}
+	return map[string]string{"Authorization": fmt.Sprintf("Bearer %s", apiKey)}
 }
 
 // GenerateAuthCode generate an auth code
@@ -54,7 +52,11 @@ func GenerateAuthCode(host string, verifyTLS bool, hostname string, os string, a
 	params = append(params, queryParam{Key: "os", Value: os})
 	params = append(params, queryParam{Key: "arch", Value: arch})
 
-	statusCode, _, response, err := GetRequest(host, verifyTLS, nil, "/v3/auth/cli/generate/2", params)
+	url, err := generateURL(host, "/v3/auth/cli/generate/2", params)
+	if err != nil {
+		return nil, Error{Err: err, Message: "Unable to generate url"}
+	}
+	statusCode, _, response, err := GetRequest(url, verifyTLS, nil)
 	if err != nil {
 		return nil, Error{Err: err, Message: "Unable to fetch auth code", Code: statusCode}
 	}
@@ -77,7 +79,12 @@ func GetAuthToken(host string, verifyTLS bool, code string) (map[string]interfac
 		return nil, Error{Err: err, Message: "Invalid auth code"}
 	}
 
-	statusCode, _, response, err := PostRequest(host, verifyTLS, nil, "/v3/auth/cli/authorize", []queryParam{}, body)
+	url, err := generateURL(host, "/v3/auth/cli/authorize", nil)
+	if err != nil {
+		return nil, Error{Err: err, Message: "Unable to generate url"}
+	}
+
+	statusCode, _, response, err := PostRequest(url, verifyTLS, nil, body)
 	if err != nil {
 		return nil, Error{Err: err, Message: "Unable to fetch auth token", Code: statusCode}
 	}
@@ -100,7 +107,12 @@ func RollAuthToken(host string, verifyTLS bool, token string) (map[string]interf
 		return nil, Error{Err: err, Message: "Invalid auth token"}
 	}
 
-	statusCode, _, response, err := PostRequest(host, verifyTLS, nil, "/v3/auth/cli/roll", []queryParam{}, body)
+	url, err := generateURL(host, "/v3/auth/cli/roll", nil)
+	if err != nil {
+		return nil, Error{Err: err, Message: "Unable to generate url"}
+	}
+
+	statusCode, _, response, err := PostRequest(url, verifyTLS, nil, body)
 	if err != nil {
 		return nil, Error{Err: err, Message: "Unable to roll auth token", Code: statusCode}
 	}
@@ -123,7 +135,12 @@ func RevokeAuthToken(host string, verifyTLS bool, token string) (map[string]inte
 		return nil, Error{Err: err, Message: "Invalid auth token"}
 	}
 
-	statusCode, _, response, err := PostRequest(host, verifyTLS, nil, "/v3/auth/cli/revoke", []queryParam{}, body)
+	url, err := generateURL(host, "/v3/auth/cli/revoke", nil)
+	if err != nil {
+		return nil, Error{Err: err, Message: "Unable to generate url"}
+	}
+
+	statusCode, _, response, err := PostRequest(url, verifyTLS, nil, body)
 	if err != nil {
 		return nil, Error{Err: err, Message: "Unable to revoke auth token", Code: statusCode}
 	}
@@ -137,13 +154,102 @@ func RevokeAuthToken(host string, verifyTLS bool, token string) (map[string]inte
 	return result, Error{}
 }
 
+
+// GetOIDCAuthToken get a short lived service account identity auth token from an OIDC token
+func GetOIDCAuthToken(host string, verifyTLS bool, identityId string, oidcJWT string) (map[string]interface{}, Error) {
+	reqBody := map[string]interface{}{}
+	reqBody["identity"] = identityId 
+	reqBody["token"] = oidcJWT 
+	body, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, Error{Err: err, Message: "Invalid OIDC auth token"}
+	}
+
+	url, err := generateURL(host, "/v3/auth/oidc", nil)
+	if err != nil {
+		return nil, Error{Err: err, Message: "Unable to generate url"}
+	}
+
+	statusCode, _, response, err := PostRequest(url, verifyTLS, nil, body)
+	if err != nil {
+		return nil, Error{Err: err, Message: "Unable to generate auth token", Code: statusCode}
+	}
+
+	var result map[string]interface{}
+	err = json.Unmarshal(response, &result)
+	if err != nil {
+		return nil, Error{Err: err, Message: "Unable to parse auth token", Code: statusCode}
+	}
+
+	return result, Error{}
+}
+
+
+// RevokeIdentityAuthToken revoke a short lived service account identity auth token
+func RevokeIdentityAuthToken(host string, verifyTLS bool, token string) (Error) {
+	reqBody := map[string]interface{}{}
+	reqBody["token"] = token
+	body, err := json.Marshal(reqBody)
+	if err != nil {
+		return Error{Err: err, Message: "Invalid identity auth token"}
+	}
+
+	url, err := generateURL(host, "/v3/auth/revoke", nil)
+	if err != nil {
+		return Error{Err: err, Message: "Unable to generate url"}
+	}
+
+	statusCode, _, _, err := PostRequest(url, verifyTLS, nil, body)
+	if err != nil {
+		return Error{Err: err, Message: "Unable to revoke auth token", Code: statusCode}
+	}
+
+	return Error{}
+}
+
+// WatchSecrets for any changes
+func WatchSecrets(host string, verifyTLS bool, apiKey string, project string, config string, handler func([]byte)) (int, http.Header, Error) {
+	var params []queryParam
+	params = append(params, queryParam{Key: "project", Value: project})
+	params = append(params, queryParam{Key: "config", Value: config})
+
+	url, err := generateURL(host, "/v3/configs/config/secrets/watch", params)
+	if err != nil {
+		return 0, nil, Error{Err: err, Message: "Unable to generate url"}
+	}
+
+	headers := apiKeyHeader(apiKey)
+	headers["Cache-Control"] = "no-cache"
+	headers["Accept"] = "text/event-stream"
+	headers["Connection"] = "keep-alive"
+
+	req, err := http.NewRequest("GET", url.String(), nil)
+	if err != nil {
+		return 0, nil, Error{Err: err, Message: "Unable to submit request"}
+	}
+
+	for key, value := range headers {
+		req.Header.Set(key, value)
+	}
+
+	statusCode, respHeaders, err := performSSERequest(req, verifyTLS, handler)
+	if err != nil {
+		return statusCode, respHeaders, Error{Err: err, Message: "Unable to perform request", Code: statusCode}
+	}
+
+	return statusCode, respHeaders, Error{}
+}
+
 // DownloadSecrets for specified project and config
-func DownloadSecrets(host string, verifyTLS bool, apiKey string, project string, config string, format models.SecretsFormat, nameTransformer *models.SecretsNameTransformer, etag string, dynamicSecretsTTL time.Duration) (int, http.Header, []byte, Error) {
+func DownloadSecrets(host string, verifyTLS bool, apiKey string, project string, config string, format models.SecretsFormat, nameTransformer *models.SecretsNameTransformer, etag string, dynamicSecretsTTL time.Duration, secrets []string) (int, http.Header, []byte, Error) {
 	var params []queryParam
 	params = append(params, queryParam{Key: "project", Value: project})
 	params = append(params, queryParam{Key: "config", Value: config})
 	params = append(params, queryParam{Key: "format", Value: format.String()})
 	params = append(params, queryParam{Key: "include_dynamic_secrets", Value: "true"})
+	if len(secrets) > 0 {
+		params = append(params, queryParam{Key: "secrets", Value: strings.Join(secrets, ",")})
+	}
 
 	if dynamicSecretsTTL > 0 {
 		ttlSeconds := int(dynamicSecretsTTL.Seconds())
@@ -158,7 +264,12 @@ func DownloadSecrets(host string, verifyTLS bool, apiKey string, project string,
 		headers["If-None-Match"] = etag
 	}
 
-	statusCode, respHeaders, response, err := GetRequest(host, verifyTLS, headers, "/v3/configs/config/secrets/download", params)
+	url, err := generateURL(host, "/v3/configs/config/secrets/download", params)
+	if err != nil {
+		return 0, nil, nil, Error{Err: err, Message: "Unable to generate url"}
+	}
+
+	statusCode, respHeaders, response, err := GetRequest(url, verifyTLS, headers)
 	if err != nil {
 		return statusCode, respHeaders, nil, Error{Err: err, Message: "Unable to download secrets", Code: statusCode}
 	}
@@ -171,25 +282,25 @@ func GetSecrets(host string, verifyTLS bool, apiKey string, project string, conf
 	var params []queryParam
 	params = append(params, queryParam{Key: "project", Value: project})
 	params = append(params, queryParam{Key: "config", Value: config})
+	params = append(params, queryParam{Key: "include_dynamic_secrets", Value: strconv.FormatBool(includeDynamicSecrets)})
 
 	if secrets != nil {
 		params = append(params, queryParam{Key: "secrets", Value: strings.Join(secrets, ",")})
 	}
-
-	includeDynamicSecretsOption := "false"
-	if includeDynamicSecrets {
-		includeDynamicSecretsOption = "true"
-	}
-	params = append(params, queryParam{Key: "include_dynamic_secrets", Value: includeDynamicSecretsOption})
 
 	if dynamicSecretsTTL > 0 {
 		ttlSeconds := int(dynamicSecretsTTL.Seconds())
 		params = append(params, queryParam{Key: "dynamic_secrets_ttl_sec", Value: strconv.Itoa(ttlSeconds)})
 	}
 
+	url, err := generateURL(host, "/v3/configs/config/secrets", params)
+	if err != nil {
+		return nil, Error{Err: err, Message: "Unable to generate url"}
+	}
+
 	headers := apiKeyHeader(apiKey)
 	headers["Accept"] = "application/json"
-	statusCode, _, response, err := GetRequest(host, verifyTLS, headers, "/v3/configs/config/secrets", params)
+	statusCode, _, response, err := GetRequest(url, verifyTLS, headers)
 	if err != nil {
 		return nil, Error{Err: err, Message: "Unable to fetch secrets", Code: statusCode}
 	}
@@ -198,9 +309,13 @@ func GetSecrets(host string, verifyTLS bool, apiKey string, project string, conf
 }
 
 // SetSecrets for specified project and config
-func SetSecrets(host string, verifyTLS bool, apiKey string, project string, config string, secrets map[string]interface{}) (map[string]models.ComputedSecret, Error) {
+func SetSecrets(host string, verifyTLS bool, apiKey string, project string, config string, secrets map[string]interface{}, changeRequests []models.ChangeRequest) (map[string]models.ComputedSecret, Error) {
 	reqBody := map[string]interface{}{}
-	reqBody["secrets"] = secrets
+	if changeRequests != nil {
+		reqBody["change_requests"] = changeRequests
+	} else {
+		reqBody["secrets"] = secrets
+	}
 	body, err := json.Marshal(reqBody)
 	if err != nil {
 		return nil, Error{Err: err, Message: "Invalid secrets"}
@@ -210,27 +325,111 @@ func SetSecrets(host string, verifyTLS bool, apiKey string, project string, conf
 	params = append(params, queryParam{Key: "project", Value: project})
 	params = append(params, queryParam{Key: "config", Value: config})
 
-	statusCode, _, response, err := PostRequest(host, verifyTLS, apiKeyHeader(apiKey), "/v3/configs/config/secrets", params, body)
+	url, err := generateURL(host, "/v3/configs/config/secrets", params)
+	if err != nil {
+		return nil, Error{Err: err, Message: "Unable to generate url"}
+	}
+
+	statusCode, _, response, err := PostRequest(url, verifyTLS, apiKeyHeader(apiKey), body)
 	if err != nil {
 		return nil, Error{Err: err, Message: "Unable to set secrets", Code: statusCode}
 	}
 
-	var result map[string]interface{}
+	var result models.APISecretResponse
 	err = json.Unmarshal(response, &result)
 	if err != nil {
 		return nil, Error{Err: err, Message: "Unable to parse API response", Code: statusCode}
 	}
 
-	computed := map[string]models.ComputedSecret{}
-	for key, secret := range result["secrets"].(map[string]interface{}) {
-		val, ok := secret.(map[string]interface{})
-		if !ok {
-			return nil, Error{Err: fmt.Errorf("Unexpected type mismatch for secret, expected map[string]interface{}, got %T", secret), Message: "Unable to parse API response", Code: statusCode}
-		}
-		computed[key] = models.ComputedSecret{Name: key, RawValue: val["raw"].(string), ComputedValue: val["computed"].(string)}
+	return models.ConvertAPIToComputedSecrets(result.Secrets), Error{}
+}
+
+// Set Secret Note for specified project and config
+// This is deprecated in favor of SetSecretNoteViaProject
+func SetSecretNoteViaConfig(host string, verifyTLS bool, apiKey string, project string, config string, secret string, note string) (models.SecretNote, Error) {
+	body, err := json.Marshal(models.SecretNote{Secret: secret, Note: note})
+	if err != nil {
+		return models.SecretNote{}, Error{Err: err, Message: "Invalid secret note"}
 	}
 
-	return computed, Error{}
+	var params []queryParam
+	params = append(params, queryParam{Key: "project", Value: project})
+	params = append(params, queryParam{Key: "config", Value: config})
+
+	url, err := generateURL(host, "/v3/configs/config/secrets/note", params)
+	if err != nil {
+		return models.SecretNote{}, Error{Err: err, Message: "Unable to generate url"}
+	}
+
+	statusCode, _, response, err := PostRequest(url, verifyTLS, apiKeyHeader(apiKey), body)
+	if err != nil {
+		return models.SecretNote{}, Error{Err: err, Message: "Unable to set secret note", Code: statusCode}
+	}
+
+	var secretNote models.SecretNote
+	err = json.Unmarshal(response, &secretNote)
+	if err != nil {
+		return models.SecretNote{}, Error{Err: err, Message: "Unable to parse API response", Code: statusCode}
+	}
+
+	return secretNote, Error{}
+}
+
+// Set Secret Note for specified project
+func SetSecretNoteViaProject(host string, verifyTLS bool, apiKey string, project string, secret string, note string) (models.SecretNote, Error) {
+	body, err := json.Marshal(models.SecretNote{Secret: secret, Note: note})
+	if err != nil {
+		return models.SecretNote{}, Error{Err: err, Message: "Invalid secret note"}
+	}
+
+	var params []queryParam
+	params = append(params, queryParam{Key: "project", Value: project})
+
+	url, err := generateURL(host, "/v3/projects/project/note", params)
+	if err != nil {
+		return models.SecretNote{}, Error{Err: err, Message: "Unable to generate url"}
+	}
+
+	statusCode, _, response, err := PostRequest(url, verifyTLS, apiKeyHeader(apiKey), body)
+	if err != nil {
+		return models.SecretNote{}, Error{Err: err, Message: "Unable to set secret note", Code: statusCode}
+	}
+
+	var secretNote models.SecretNote
+	err = json.Unmarshal(response, &secretNote)
+	if err != nil {
+		return models.SecretNote{}, Error{Err: err, Message: "Unable to parse API response", Code: statusCode}
+	}
+
+	return secretNote, Error{}
+}
+
+// GetSecretNames for specified project and config
+func GetSecretNames(host string, verifyTLS bool, apiKey string, project string, config string, includeDynamicSecrets bool) ([]string, Error) {
+	var params []queryParam
+	params = append(params, queryParam{Key: "project", Value: project})
+	params = append(params, queryParam{Key: "config", Value: config})
+	params = append(params, queryParam{Key: "include_dynamic_secrets", Value: strconv.FormatBool(includeDynamicSecrets)})
+
+	url, err := generateURL(host, "/v3/configs/config/secrets/names", params)
+	if err != nil {
+		return nil, Error{Err: err, Message: "Unable to generate url"}
+	}
+
+	statusCode, _, response, err := GetRequest(url, verifyTLS, apiKeyHeader(apiKey))
+	if err != nil {
+		return nil, Error{Err: err, Message: "Unable to fetch secret names", Code: statusCode}
+	}
+
+	var result struct {
+		Names []string `json:"names"`
+	}
+	err = json.Unmarshal(response, &result)
+	if err != nil {
+		return nil, Error{Err: err, Message: "Unable to parse API response", Code: statusCode}
+	}
+
+	return result.Names, Error{}
 }
 
 // UploadSecrets for specified project and config
@@ -246,32 +445,33 @@ func UploadSecrets(host string, verifyTLS bool, apiKey string, project string, c
 	params = append(params, queryParam{Key: "project", Value: project})
 	params = append(params, queryParam{Key: "config", Value: config})
 
-	statusCode, _, response, err := PostRequest(host, verifyTLS, apiKeyHeader(apiKey), "/v3/configs/config/secrets/upload", params, body)
+	url, err := generateURL(host, "/v3/configs/config/secrets/upload", params)
+	if err != nil {
+		return nil, Error{Err: err, Message: "Unable to generate url"}
+	}
+
+	statusCode, _, response, err := PostRequest(url, verifyTLS, apiKeyHeader(apiKey), body)
 	if err != nil {
 		return nil, Error{Err: err, Message: "Unable to upload secrets", Code: statusCode}
 	}
 
-	var result map[string]interface{}
+	var result models.APISecretResponse
 	err = json.Unmarshal(response, &result)
 	if err != nil {
 		return nil, Error{Err: err, Message: "Unable to parse API response", Code: statusCode}
 	}
 
-	computed := map[string]models.ComputedSecret{}
-	for key, secret := range result["secrets"].(map[string]interface{}) {
-		val, ok := secret.(map[string]interface{})
-		if !ok {
-			return nil, Error{Err: fmt.Errorf("Unexpected type for secret, expected map[string]interface{}, got %T", secret), Message: "Unable to parse API response", Code: statusCode}
-		}
-		computed[key] = models.ComputedSecret{Name: key, RawValue: val["raw"].(string), ComputedValue: val["computed"].(string)}
-	}
-
-	return computed, Error{}
+	return models.ConvertAPIToComputedSecrets(result.Secrets), Error{}
 }
 
 // GetWorkplaceSettings get specified workplace settings
 func GetWorkplaceSettings(host string, verifyTLS bool, apiKey string) (models.WorkplaceSettings, Error) {
-	statusCode, _, response, err := GetRequest(host, verifyTLS, apiKeyHeader(apiKey), "/workplace/v1", []queryParam{})
+	url, err := generateURL(host, "/v3/workplace", nil)
+	if err != nil {
+		return models.WorkplaceSettings{}, Error{Err: err, Message: "Unable to generate url"}
+	}
+
+	statusCode, _, response, err := GetRequest(url, verifyTLS, apiKeyHeader(apiKey))
 	if err != nil {
 		return models.WorkplaceSettings{}, Error{Err: err, Message: "Unable to fetch workplace settings", Code: statusCode}
 	}
@@ -297,7 +497,12 @@ func SetWorkplaceSettings(host string, verifyTLS bool, apiKey string, values mod
 		return models.WorkplaceSettings{}, Error{Err: err, Message: "Invalid workplace settings"}
 	}
 
-	statusCode, _, response, err := PostRequest(host, verifyTLS, apiKeyHeader(apiKey), "/workplace/v1", []queryParam{}, body)
+	url, err := generateURL(host, "/v3/workplace", nil)
+	if err != nil {
+		return models.WorkplaceSettings{}, Error{Err: err, Message: "Unable to generate url"}
+	}
+
+	statusCode, _, response, err := PostRequest(url, verifyTLS, apiKeyHeader(apiKey), body)
 	if err != nil {
 		return models.WorkplaceSettings{}, Error{Err: err, Message: "Unable to update workplace settings", Code: statusCode}
 	}
@@ -317,11 +522,17 @@ func SetWorkplaceSettings(host string, verifyTLS bool, apiKey string, values mod
 }
 
 // GetProjects get projects
-func GetProjects(host string, verifyTLS bool, apiKey string) ([]models.ProjectInfo, Error) {
+func GetProjects(host string, verifyTLS bool, apiKey string, page int, number int) ([]models.ProjectInfo, Error) {
 	var params []queryParam
-	params = append(params, queryParam{Key: "per_page", Value: "100"})
+	params = append(params, queryParam{Key: "page", Value: strconv.Itoa(page)})
+	params = append(params, queryParam{Key: "per_page", Value: strconv.Itoa(number)})
 
-	statusCode, _, response, err := GetRequest(host, verifyTLS, apiKeyHeader(apiKey), "/v3/projects", params)
+	url, err := generateURL(host, "/v3/projects", params)
+	if err != nil {
+		return nil, Error{Err: err, Message: "Unable to generate url"}
+	}
+
+	statusCode, _, response, err := GetRequest(url, verifyTLS, apiKeyHeader(apiKey))
 	if err != nil {
 		return nil, Error{Err: err, Message: "Unable to fetch projects", Code: statusCode}
 	}
@@ -349,7 +560,12 @@ func GetProject(host string, verifyTLS bool, apiKey string, project string) (mod
 	var params []queryParam
 	params = append(params, queryParam{Key: "project", Value: project})
 
-	statusCode, _, response, err := GetRequest(host, verifyTLS, apiKeyHeader(apiKey), "/v3/projects/project", params)
+	url, err := generateURL(host, "/v3/projects/project", params)
+	if err != nil {
+		return models.ProjectInfo{}, Error{Err: err, Message: "Unable to generate url"}
+	}
+
+	statusCode, _, response, err := GetRequest(url, verifyTLS, apiKeyHeader(apiKey))
 	if err != nil {
 		return models.ProjectInfo{}, Error{Err: err, Message: "Unable to fetch project", Code: statusCode}
 	}
@@ -376,7 +592,12 @@ func CreateProject(host string, verifyTLS bool, apiKey string, name string, desc
 		return models.ProjectInfo{}, Error{Err: err, Message: "Invalid project info"}
 	}
 
-	statusCode, _, response, err := PostRequest(host, verifyTLS, apiKeyHeader(apiKey), "/v3/projects", []queryParam{}, body)
+	url, err := generateURL(host, "/v3/projects", nil)
+	if err != nil {
+		return models.ProjectInfo{}, Error{Err: err, Message: "Unable to generate url"}
+	}
+
+	statusCode, _, response, err := PostRequest(url, verifyTLS, apiKeyHeader(apiKey), body)
 	if err != nil {
 		return models.ProjectInfo{}, Error{Err: err, Message: "Unable to create project", Code: statusCode}
 	}
@@ -411,7 +632,12 @@ func UpdateProject(host string, verifyTLS bool, apiKey string, project string, n
 	var params []queryParam
 	params = append(params, queryParam{Key: "project", Value: project})
 
-	statusCode, _, response, err := PostRequest(host, verifyTLS, apiKeyHeader(apiKey), "/v3/projects/project", params, body)
+	url, err := generateURL(host, "/v3/projects/project", params)
+	if err != nil {
+		return models.ProjectInfo{}, Error{Err: err, Message: "Unable to generate url"}
+	}
+
+	statusCode, _, response, err := PostRequest(url, verifyTLS, apiKeyHeader(apiKey), body)
 	if err != nil {
 		return models.ProjectInfo{}, Error{Err: err, Message: "Unable to update project", Code: statusCode}
 	}
@@ -435,7 +661,12 @@ func DeleteProject(host string, verifyTLS bool, apiKey string, project string) E
 	var params []queryParam
 	params = append(params, queryParam{Key: "project", Value: project})
 
-	statusCode, _, response, err := DeleteRequest(host, verifyTLS, apiKeyHeader(apiKey), "/v3/projects/project", params)
+	url, err := generateURL(host, "/v3/projects/project", params)
+	if err != nil {
+		return Error{Err: err, Message: "Unable to generate url"}
+	}
+
+	statusCode, _, response, err := DeleteRequest(url, verifyTLS, apiKeyHeader(apiKey), nil)
 	if err != nil {
 		return Error{Err: err, Message: "Unable to delete project", Code: statusCode}
 	}
@@ -450,11 +681,18 @@ func DeleteProject(host string, verifyTLS bool, apiKey string, project string) E
 }
 
 // GetEnvironments get environments
-func GetEnvironments(host string, verifyTLS bool, apiKey string, project string) ([]models.EnvironmentInfo, Error) {
+func GetEnvironments(host string, verifyTLS bool, apiKey string, project string, page int, number int) ([]models.EnvironmentInfo, Error) {
 	var params []queryParam
 	params = append(params, queryParam{Key: "project", Value: project})
+	params = append(params, queryParam{Key: "page", Value: strconv.Itoa(page)})
+	params = append(params, queryParam{Key: "per_page", Value: strconv.Itoa(number)})
 
-	statusCode, _, response, err := GetRequest(host, verifyTLS, apiKeyHeader(apiKey), "/v3/environments", params)
+	url, err := generateURL(host, "/v3/environments", params)
+	if err != nil {
+		return nil, Error{Err: err, Message: "Unable to generate url"}
+	}
+
+	statusCode, _, response, err := GetRequest(url, verifyTLS, apiKeyHeader(apiKey))
 	if err != nil {
 		return nil, Error{Err: err, Message: "Unable to fetch environments", Code: statusCode}
 	}
@@ -483,7 +721,12 @@ func GetEnvironment(host string, verifyTLS bool, apiKey string, project string, 
 	params = append(params, queryParam{Key: "project", Value: project})
 	params = append(params, queryParam{Key: "environment", Value: environment})
 
-	statusCode, _, response, err := GetRequest(host, verifyTLS, apiKeyHeader(apiKey), "/v3/environments/environment", params)
+	url, err := generateURL(host, "/v3/environments/environment", params)
+	if err != nil {
+		return models.EnvironmentInfo{}, Error{Err: err, Message: "Unable to generate url"}
+	}
+
+	statusCode, _, response, err := GetRequest(url, verifyTLS, apiKeyHeader(apiKey))
 	if err != nil {
 		return models.EnvironmentInfo{}, Error{Err: err, Message: "Unable to fetch environment", Code: statusCode}
 	}
@@ -510,7 +753,12 @@ func CreateEnvironment(host string, verifyTLS bool, apiKey string, project strin
 		return models.EnvironmentInfo{}, Error{Err: err, Message: "Invalid environment info"}
 	}
 
-	statusCode, _, response, err := PostRequest(host, verifyTLS, apiKeyHeader(apiKey), "/v3/environments", []queryParam{}, body)
+	url, err := generateURL(host, "/v3/environments", nil)
+	if err != nil {
+		return models.EnvironmentInfo{}, Error{Err: err, Message: "Unable to generate url"}
+	}
+
+	statusCode, _, response, err := PostRequest(url, verifyTLS, apiKeyHeader(apiKey), body)
 	if err != nil {
 		return models.EnvironmentInfo{}, Error{Err: err, Message: "Unable to create environment", Code: statusCode}
 	}
@@ -537,7 +785,12 @@ func DeleteEnvironment(host string, verifyTLS bool, apiKey string, project strin
 	params = append(params, queryParam{Key: "project", Value: project})
 	params = append(params, queryParam{Key: "environment", Value: environment})
 
-	statusCode, _, response, err := DeleteRequest(host, verifyTLS, apiKeyHeader(apiKey), "/v3/environments/environment", params)
+	url, err := generateURL(host, "/v3/environments/environment", params)
+	if err != nil {
+		return Error{Err: err, Message: "Unable to generate url"}
+	}
+
+	statusCode, _, response, err := DeleteRequest(url, verifyTLS, apiKeyHeader(apiKey), nil)
 	if err != nil {
 		return Error{Err: err, Message: "Unable to delete environment", Code: statusCode}
 	}
@@ -565,7 +818,12 @@ func RenameEnvironment(host string, verifyTLS bool, apiKey string, project strin
 		return models.EnvironmentInfo{}, Error{Err: err, Message: "Invalid environment info"}
 	}
 
-	statusCode, _, response, err := PutRequest(host, verifyTLS, apiKeyHeader(apiKey), "/v3/environments/environment", []queryParam{}, body)
+	url, err := generateURL(host, "/v3/environments/environment", nil)
+	if err != nil {
+		return models.EnvironmentInfo{}, Error{Err: err, Message: "Unable to generate url"}
+	}
+
+	statusCode, _, response, err := PutRequest(url, verifyTLS, apiKeyHeader(apiKey), body)
 	if err != nil {
 		return models.EnvironmentInfo{}, Error{Err: err, Message: "Unable to rename environment", Code: statusCode}
 	}
@@ -586,12 +844,21 @@ func RenameEnvironment(host string, verifyTLS bool, apiKey string, project strin
 }
 
 // GetConfigs get configs
-func GetConfigs(host string, verifyTLS bool, apiKey string, project string) ([]models.ConfigInfo, Error) {
+func GetConfigs(host string, verifyTLS bool, apiKey string, project string, environment string, page int, number int) ([]models.ConfigInfo, Error) {
 	var params []queryParam
 	params = append(params, queryParam{Key: "project", Value: project})
-	params = append(params, queryParam{Key: "per_page", Value: "100"})
+	params = append(params, queryParam{Key: "per_page", Value: strconv.Itoa(number)})
+	params = append(params, queryParam{Key: "page", Value: strconv.Itoa(page)})
+	if environment != "" {
+		params = append(params, queryParam{Key: "environment", Value: environment})
+	}
 
-	statusCode, _, response, err := GetRequest(host, verifyTLS, apiKeyHeader(apiKey), "/v3/configs", params)
+	url, err := generateURL(host, "/v3/configs", params)
+	if err != nil {
+		return nil, Error{Err: err, Message: "Unable to generate url"}
+	}
+
+	statusCode, _, response, err := GetRequest(url, verifyTLS, apiKeyHeader(apiKey))
 	if err != nil {
 		return nil, Error{Err: err, Message: "Unable to fetch configs", Code: statusCode}
 	}
@@ -620,7 +887,12 @@ func GetConfig(host string, verifyTLS bool, apiKey string, project string, confi
 	params = append(params, queryParam{Key: "project", Value: project})
 	params = append(params, queryParam{Key: "config", Value: config})
 
-	statusCode, _, response, err := GetRequest(host, verifyTLS, apiKeyHeader(apiKey), "/v3/configs/config", params)
+	url, err := generateURL(host, "/v3/configs/config", params)
+	if err != nil {
+		return models.ConfigInfo{}, Error{Err: err, Message: "Unable to generate url"}
+	}
+
+	statusCode, _, response, err := GetRequest(url, verifyTLS, apiKeyHeader(apiKey))
 	if err != nil {
 		return models.ConfigInfo{}, Error{Err: err, Message: "Unable to fetch configs", Code: statusCode}
 	}
@@ -650,7 +922,12 @@ func CreateConfig(host string, verifyTLS bool, apiKey string, project string, na
 	var params []queryParam
 	params = append(params, queryParam{Key: "project", Value: project})
 
-	statusCode, _, response, err := PostRequest(host, verifyTLS, apiKeyHeader(apiKey), "/v3/configs", params, body)
+	url, err := generateURL(host, "/v3/configs", params)
+	if err != nil {
+		return models.ConfigInfo{}, Error{Err: err, Message: "Unable to generate url"}
+	}
+
+	statusCode, _, response, err := PostRequest(url, verifyTLS, apiKeyHeader(apiKey), body)
 	if err != nil {
 		return models.ConfigInfo{}, Error{Err: err, Message: "Unable to create config", Code: statusCode}
 	}
@@ -675,7 +952,12 @@ func DeleteConfig(host string, verifyTLS bool, apiKey string, project string, co
 	params = append(params, queryParam{Key: "project", Value: project})
 	params = append(params, queryParam{Key: "config", Value: config})
 
-	statusCode, _, response, err := DeleteRequest(host, verifyTLS, apiKeyHeader(apiKey), "/v3/configs/config", params)
+	url, err := generateURL(host, "/v3/configs/config", params)
+	if err != nil {
+		return Error{Err: err, Message: "Unable to generate url"}
+	}
+
+	statusCode, _, response, err := DeleteRequest(url, verifyTLS, apiKeyHeader(apiKey), nil)
 	if err != nil {
 		return Error{Err: err, Message: "Unable to delete config", Code: statusCode}
 	}
@@ -695,7 +977,12 @@ func LockConfig(host string, verifyTLS bool, apiKey string, project string, conf
 	params = append(params, queryParam{Key: "project", Value: project})
 	params = append(params, queryParam{Key: "config", Value: config})
 
-	statusCode, _, response, err := PostRequest(host, verifyTLS, apiKeyHeader(apiKey), "/v3/configs/config/lock", params, nil)
+	url, err := generateURL(host, "/v3/configs/config/lock", params)
+	if err != nil {
+		return models.ConfigInfo{}, Error{Err: err, Message: "Unable to generate url"}
+	}
+
+	statusCode, _, response, err := PostRequest(url, verifyTLS, apiKeyHeader(apiKey), nil)
 	if err != nil {
 		return models.ConfigInfo{}, Error{Err: err, Message: "Unable to lock config", Code: statusCode}
 	}
@@ -720,7 +1007,12 @@ func UnlockConfig(host string, verifyTLS bool, apiKey string, project string, co
 	params = append(params, queryParam{Key: "project", Value: project})
 	params = append(params, queryParam{Key: "config", Value: config})
 
-	statusCode, _, response, err := PostRequest(host, verifyTLS, apiKeyHeader(apiKey), "/v3/configs/config/unlock", params, nil)
+	url, err := generateURL(host, "/v3/configs/config/unlock", params)
+	if err != nil {
+		return models.ConfigInfo{}, Error{Err: err, Message: "Unable to generate url"}
+	}
+
+	statusCode, _, response, err := PostRequest(url, verifyTLS, apiKeyHeader(apiKey), nil)
 	if err != nil {
 		return models.ConfigInfo{}, Error{Err: err, Message: "Unable to unlock config", Code: statusCode}
 	}
@@ -751,7 +1043,12 @@ func CloneConfig(host string, verifyTLS bool, apiKey string, project string, con
 	params = append(params, queryParam{Key: "project", Value: project})
 	params = append(params, queryParam{Key: "config", Value: config})
 
-	statusCode, _, response, err := PostRequest(host, verifyTLS, apiKeyHeader(apiKey), "/v3/configs/config/clone", params, body)
+	url, err := generateURL(host, "/v3/configs/config/clone", params)
+	if err != nil {
+		return models.ConfigInfo{}, Error{Err: err, Message: "Unable to generate url"}
+	}
+
+	statusCode, _, response, err := PostRequest(url, verifyTLS, apiKeyHeader(apiKey), body)
 	if err != nil {
 		return models.ConfigInfo{}, Error{Err: err, Message: "Unable to clone config", Code: statusCode}
 	}
@@ -782,7 +1079,96 @@ func UpdateConfig(host string, verifyTLS bool, apiKey string, project string, co
 	params = append(params, queryParam{Key: "project", Value: project})
 	params = append(params, queryParam{Key: "config", Value: config})
 
-	statusCode, _, response, err := PostRequest(host, verifyTLS, apiKeyHeader(apiKey), "/v3/configs/config", params, body)
+	url, err := generateURL(host, "/v3/configs/config", params)
+	if err != nil {
+		return models.ConfigInfo{}, Error{Err: err, Message: "Unable to generate url"}
+	}
+
+	statusCode, _, response, err := PostRequest(url, verifyTLS, apiKeyHeader(apiKey), body)
+	if err != nil {
+		return models.ConfigInfo{}, Error{Err: err, Message: "Unable to update config", Code: statusCode}
+	}
+
+	var result map[string]interface{}
+	err = json.Unmarshal(response, &result)
+	if err != nil {
+		return models.ConfigInfo{}, Error{Err: err, Message: "Unable to parse API response", Code: statusCode}
+	}
+
+	configInfo, ok := result["config"].(map[string]interface{})
+	if !ok {
+		return models.ConfigInfo{}, Error{Err: fmt.Errorf("Unexpected type parsing config info, expected map[string]interface{}, got %T", result["config"]), Message: "Unable to parse API response", Code: statusCode}
+	}
+	info := models.ParseConfigInfo(configInfo)
+	return info, Error{}
+}
+
+func UpdateConfigInheritable(host string, verifyTLS bool, apiKey string, project string, config string, inheritable bool) (models.ConfigInfo, Error) {
+	postBody := map[string]interface{}{"inheritable": inheritable}
+	body, err := json.Marshal(postBody)
+	if err != nil {
+		return models.ConfigInfo{}, Error{Err: err, Message: "Invalid config info"}
+	}
+
+	var params []queryParam
+	params = append(params, queryParam{Key: "project", Value: project})
+	params = append(params, queryParam{Key: "config", Value: config})
+
+	url, err := generateURL(host, "/v3/configs/config/inheritable", params)
+	if err != nil {
+		return models.ConfigInfo{}, Error{Err: err, Message: "Unable to generate url"}
+	}
+
+	statusCode, _, response, err := PostRequest(url, verifyTLS, apiKeyHeader(apiKey), body)
+	if err != nil {
+		return models.ConfigInfo{}, Error{Err: err, Message: "Unable to update config", Code: statusCode}
+	}
+
+	var result map[string]interface{}
+	err = json.Unmarshal(response, &result)
+	if err != nil {
+		return models.ConfigInfo{}, Error{Err: err, Message: "Unable to parse API response", Code: statusCode}
+	}
+
+	configInfo, ok := result["config"].(map[string]interface{})
+	if !ok {
+		return models.ConfigInfo{}, Error{Err: fmt.Errorf("Unexpected type parsing config info, expected map[string]interface{}, got %T", result["config"]), Message: "Unable to parse API response", Code: statusCode}
+	}
+	info := models.ParseConfigInfo(configInfo)
+	return info, Error{}
+}
+
+func UpdateConfigInherits(host string, verifyTLS bool, apiKey string, project string, config string, inherits string) (models.ConfigInfo, Error) {
+	inheritsObj := []models.ConfigDescriptor{}
+
+	if len(inherits) > 0 {
+		configDescriptors := strings.Split(inherits, ",")
+		for _, cd := range configDescriptors {
+			parts := strings.Split(cd, ".")
+			if len(parts) != 2 {
+				return models.ConfigInfo{}, Error{Message: "Config descriptors must match the format \"project.config\""}
+			}
+			inheritsObj = append(inheritsObj, models.ConfigDescriptor{Project: parts[0], Config: parts[1]})
+		}
+	}
+
+	postBody := map[string]interface{}{"inherits": inheritsObj}
+	body, err := json.Marshal(postBody)
+
+	if err != nil {
+		return models.ConfigInfo{}, Error{Err: err, Message: "Invalid config info"}
+	}
+
+	var params []queryParam
+	params = append(params, queryParam{Key: "project", Value: project})
+	params = append(params, queryParam{Key: "config", Value: config})
+
+	url, err := generateURL(host, "/v3/configs/config/inherits", params)
+	if err != nil {
+		return models.ConfigInfo{}, Error{Err: err, Message: "Unable to generate url"}
+	}
+
+	statusCode, _, response, err := PostRequest(url, verifyTLS, apiKeyHeader(apiKey), body)
 	if err != nil {
 		return models.ConfigInfo{}, Error{Err: err, Message: "Unable to update config", Code: statusCode}
 	}
@@ -802,8 +1188,21 @@ func UpdateConfig(host string, verifyTLS bool, apiKey string, project string, co
 }
 
 // GetActivityLogs get activity logs
-func GetActivityLogs(host string, verifyTLS bool, apiKey string) ([]models.ActivityLog, Error) {
-	statusCode, _, response, err := GetRequest(host, verifyTLS, apiKeyHeader(apiKey), "/logs/v1", []queryParam{})
+func GetActivityLogs(host string, verifyTLS bool, apiKey string, page int, number int) ([]models.ActivityLog, Error) {
+	var params []queryParam
+	if page != 0 {
+		params = append(params, queryParam{Key: "page", Value: fmt.Sprint(page)})
+	}
+	if number != 0 {
+		params = append(params, queryParam{Key: "per_page", Value: fmt.Sprint(number)})
+	}
+
+	url, err := generateURL(host, "/v3/logs", params)
+	if err != nil {
+		return nil, Error{Err: err, Message: "Unable to generate url"}
+	}
+
+	statusCode, _, response, err := GetRequest(url, verifyTLS, apiKeyHeader(apiKey))
 	if err != nil {
 		return nil, Error{Err: err, Message: "Unable to fetch activity logs", Code: statusCode}
 	}
@@ -828,7 +1227,14 @@ func GetActivityLogs(host string, verifyTLS bool, apiKey string) ([]models.Activ
 
 // GetActivityLog get specified activity log
 func GetActivityLog(host string, verifyTLS bool, apiKey string, log string) (models.ActivityLog, Error) {
-	statusCode, _, response, err := GetRequest(host, verifyTLS, apiKeyHeader(apiKey), "/logs/v1/"+log, []queryParam{})
+	params := []queryParam{{Key: "log", Value: log}}
+
+	url, err := generateURL(host, "/v3/logs/log", params)
+	if err != nil {
+		return models.ActivityLog{}, Error{Err: err, Message: "Unable to generate url"}
+	}
+
+	statusCode, _, response, err := GetRequest(url, verifyTLS, apiKeyHeader(apiKey))
 	if err != nil {
 		return models.ActivityLog{}, Error{Err: err, Message: "Unable to fetch activity log", Code: statusCode}
 	}
@@ -848,12 +1254,23 @@ func GetActivityLog(host string, verifyTLS bool, apiKey string, log string) (mod
 }
 
 // GetConfigLogs get config audit logs
-func GetConfigLogs(host string, verifyTLS bool, apiKey string, project string, config string) ([]models.ConfigLog, Error) {
+func GetConfigLogs(host string, verifyTLS bool, apiKey string, project string, config string, page int, number int) ([]models.ConfigLog, Error) {
 	var params []queryParam
 	params = append(params, queryParam{Key: "project", Value: project})
 	params = append(params, queryParam{Key: "config", Value: config})
+	if page != 0 {
+		params = append(params, queryParam{Key: "page", Value: fmt.Sprint(page)})
+	}
+	if number != 0 {
+		params = append(params, queryParam{Key: "per_page", Value: fmt.Sprint(number)})
+	}
 
-	statusCode, _, response, err := GetRequest(host, verifyTLS, apiKeyHeader(apiKey), "/v3/configs/config/logs", params)
+	url, err := generateURL(host, "/v3/configs/config/logs", params)
+	if err != nil {
+		return nil, Error{Err: err, Message: "Unable to generate url"}
+	}
+
+	statusCode, _, response, err := GetRequest(url, verifyTLS, apiKeyHeader(apiKey))
 	if err != nil {
 		return nil, Error{Err: err, Message: "Unable to fetch config logs", Code: statusCode}
 	}
@@ -883,7 +1300,12 @@ func GetConfigLog(host string, verifyTLS bool, apiKey string, project string, co
 	params = append(params, queryParam{Key: "config", Value: config})
 	params = append(params, queryParam{Key: "log", Value: log})
 
-	statusCode, _, response, err := GetRequest(host, verifyTLS, apiKeyHeader(apiKey), "/v3/configs/config/logs/log", params)
+	url, err := generateURL(host, "/v3/configs/config/logs/log", params)
+	if err != nil {
+		return models.ConfigLog{}, Error{Err: err, Message: "Unable to generate url"}
+	}
+
+	statusCode, _, response, err := GetRequest(url, verifyTLS, apiKeyHeader(apiKey))
 	if err != nil {
 		return models.ConfigLog{}, Error{Err: err, Message: "Unable to fetch config log", Code: statusCode}
 	}
@@ -909,7 +1331,12 @@ func RollbackConfigLog(host string, verifyTLS bool, apiKey string, project strin
 	params = append(params, queryParam{Key: "config", Value: config})
 	params = append(params, queryParam{Key: "log", Value: log})
 
-	statusCode, _, response, err := PostRequest(host, verifyTLS, apiKeyHeader(apiKey), "/v3/configs/config/logs/log/rollback", params, nil)
+	url, err := generateURL(host, "/v3/configs/config/logs/log/rollback", params)
+	if err != nil {
+		return models.ConfigLog{}, Error{Err: err, Message: "Unable to generate url"}
+	}
+
+	statusCode, _, response, err := PostRequest(url, verifyTLS, apiKeyHeader(apiKey), nil)
 	if err != nil {
 		return models.ConfigLog{}, Error{Err: err, Message: "Unable to rollback config log", Code: statusCode}
 	}
@@ -934,7 +1361,12 @@ func GetConfigServiceTokens(host string, verifyTLS bool, apiKey string, project 
 	params = append(params, queryParam{Key: "project", Value: project})
 	params = append(params, queryParam{Key: "config", Value: config})
 
-	statusCode, _, response, err := GetRequest(host, verifyTLS, apiKeyHeader(apiKey), "/v3/configs/config/tokens", params)
+	url, err := generateURL(host, "/v3/configs/config/tokens", params)
+	if err != nil {
+		return nil, Error{Err: err, Message: "Unable to generate url"}
+	}
+
+	statusCode, _, response, err := GetRequest(url, verifyTLS, apiKeyHeader(apiKey))
 	if err != nil {
 		return nil, Error{Err: err, Message: "Unable to fetch service tokens", Code: statusCode}
 	}
@@ -974,7 +1406,12 @@ func CreateConfigServiceToken(host string, verifyTLS bool, apiKey string, projec
 	params = append(params, queryParam{Key: "project", Value: project})
 	params = append(params, queryParam{Key: "config", Value: config})
 
-	statusCode, _, response, err := PostRequest(host, verifyTLS, apiKeyHeader(apiKey), "/v3/configs/config/tokens", params, body)
+	url, err := generateURL(host, "/v3/configs/config/tokens", params)
+	if err != nil {
+		return models.ConfigServiceToken{}, Error{Err: err, Message: "Unable to generate url"}
+	}
+
+	statusCode, _, response, err := PostRequest(url, verifyTLS, apiKeyHeader(apiKey), body)
 	if err != nil {
 		return models.ConfigServiceToken{}, Error{Err: err, Message: "Unable to create service token", Code: statusCode}
 	}
@@ -994,13 +1431,27 @@ func CreateConfigServiceToken(host string, verifyTLS bool, apiKey string, projec
 }
 
 // DeleteConfigServiceToken delete a config service token
-func DeleteConfigServiceToken(host string, verifyTLS bool, apiKey string, project string, config string, slug string) Error {
-	var params []queryParam
-	params = append(params, queryParam{Key: "project", Value: project})
-	params = append(params, queryParam{Key: "config", Value: config})
-	params = append(params, queryParam{Key: "slug", Value: slug})
+func DeleteConfigServiceToken(host string, verifyTLS bool, apiKey string, project string, config string, slug string, token string) Error {
+	postBody := map[string]interface{}{}
+	if slug != "" {
+		postBody["slug"] = slug
+	}
+	if token != "" {
+		postBody["token"] = token
+	}
 
-	statusCode, _, response, err := DeleteRequest(host, verifyTLS, apiKeyHeader(apiKey), "/v3/configs/config/tokens/token", params)
+	body, err := json.Marshal(postBody)
+	if err != nil {
+		return Error{Err: err, Message: "Invalid service token info"}
+	}
+
+	params := []queryParam{{Key: "project", Value: project}, {Key: "config", Value: config}}
+	url, err := generateURL(host, "/v3/configs/config/tokens/token", params)
+	if err != nil {
+		return Error{Err: err, Message: "Unable to generate url"}
+	}
+
+	statusCode, _, response, err := DeleteRequest(url, verifyTLS, apiKeyHeader(apiKey), body)
 	if err != nil {
 		return Error{Err: err, Message: "Unable to delete service token", Code: statusCode}
 	}
@@ -1023,7 +1474,12 @@ func ImportTemplate(host string, verifyTLS bool, apiKey string, template []byte)
 		return nil, Error{Err: err, Message: "Invalid template"}
 	}
 
-	statusCode, _, response, err := PostRequest(host, verifyTLS, apiKeyHeader(apiKey), "/v3/workplace/template/import", []queryParam{}, body)
+	url, err := generateURL(host, "/v3/workplace/template/import", nil)
+	if err != nil {
+		return nil, Error{Err: err, Message: "Unable to generate url"}
+	}
+
+	statusCode, _, response, err := PostRequest(url, verifyTLS, apiKeyHeader(apiKey), body)
 	if err != nil {
 		return nil, Error{Err: err, Message: "Unable to import project(s)", Code: statusCode}
 	}
@@ -1044,4 +1500,38 @@ func ImportTemplate(host string, verifyTLS bool, apiKey string, template []byte)
 		info = append(info, projectInfo)
 	}
 	return info, Error{}
+}
+
+func GetActorInfo(host string, verifyTLS bool, apiKey string) (models.ActorInfo, Error) {
+	url, err := generateURL(host, "/v3/me", nil)
+	if err != nil {
+		return models.ActorInfo{}, Error{Err: err, Message: "Unable to generate url"}
+	}
+
+	statusCode, _, response, err := GetRequest(url, verifyTLS, apiKeyHeader(apiKey))
+	if err != nil {
+		return models.ActorInfo{}, Error{Err: err, Message: "Unable to fetch actor", Code: statusCode}
+	}
+
+	var info models.ActorInfo
+	err = json.Unmarshal(response, &info)
+	if err != nil {
+		return models.ActorInfo{}, Error{Err: err, Message: "Unable to parse API response", Code: statusCode}
+	}
+
+	return info, Error{}
+}
+
+func InitiateMfaRecovery(host string, verifyTLS bool, apiKey string) Error {
+	url, err := generateURL(host, "/v3/me/mfa_recovery", nil)
+	if err != nil {
+		return Error{Err: err, Message: "Unable to generate url"}
+	}
+
+	statusCode, _, _, err := PostRequest(url, verifyTLS, apiKeyHeader(apiKey), nil)
+	if err != nil {
+		return Error{Err: err, Message: "Unable to initiate MFA recovery", Code: statusCode}
+	}
+
+	return Error{}
 }

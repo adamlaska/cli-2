@@ -111,6 +111,25 @@ func ParseConfigInfo(info map[string]interface{}) ConfigInfo {
 	if info["last_fetch_at"] != nil {
 		configInfo.LastFetchAt = info["last_fetch_at"].(string)
 	}
+	if info["inheritable"] != nil {
+		configInfo.Inheritable = info["inheritable"].(bool)
+	}
+	if info["inherits"] != nil {
+		configInfo.Inherits = []ConfigDescriptor{}
+		inherits := info["inherits"].([]interface{})
+		for _, i := range inherits {
+			descriptorMap := i.(map[string]interface{})
+			configInfo.Inherits = append(configInfo.Inherits, ConfigDescriptor{Project: descriptorMap["project"].(string), Config: descriptorMap["config"].(string)})
+		}
+	}
+	if info["inheritedBy"] != nil {
+		configInfo.InheritedBy = []ConfigDescriptor{}
+		inheritedBy := info["inheritedBy"].([]interface{})
+		for _, i := range inheritedBy {
+			descriptorMap := i.(map[string]interface{})
+			configInfo.InheritedBy = append(configInfo.InheritedBy, ConfigDescriptor{Project: descriptorMap["project"].(string), Config: descriptorMap["config"].(string)})
+		}
+	}
 
 	return configInfo
 }
@@ -146,10 +165,18 @@ func ParseConfigLog(log map[string]interface{}) ConfigLog {
 			utils.LogDebug(fmt.Sprintf("Unexpected type mismatch for ConfigLog, expected map[string]interface{}, got %T", log["user"]))
 			utils.HandleError(errors.New("Unable to parse API response"))
 		}
-		parsedLog.User.Email = user["email"].(string)
-		parsedLog.User.Name = user["name"].(string)
-		parsedLog.User.Username = user["username"].(string)
-		parsedLog.User.ProfileImage = user["profile_image_url"].(string)
+		if user["email"] != nil {
+			parsedLog.User.Email = user["email"].(string)
+		}
+		if user["name"] != nil {
+			parsedLog.User.Name = user["name"].(string)
+		}
+		if user["username"] != nil {
+			parsedLog.User.Username = user["username"].(string)
+		}
+		if user["profile_image_url"] != nil {
+			parsedLog.User.ProfileImage = user["profile_image_url"].(string)
+		}
 	}
 	if log["diff"] != nil {
 		for _, diff := range log["diff"].([]interface{}) {
@@ -223,37 +250,32 @@ func ParseActivityLog(log map[string]interface{}) ActivityLog {
 	return parsedLog
 }
 
+func ConvertAPIToComputedSecrets(apiSecrets map[string]APISecret) map[string]ComputedSecret {
+	computed := map[string]ComputedSecret{}
+	for key, secret := range apiSecrets {
+		computed[key] = ComputedSecret{
+			Name:               key,
+			RawValue:           secret.RawValue,
+			ComputedValue:      secret.ComputedValue,
+			RawVisibility:      secret.RawVisibility,
+			ComputedVisibility: secret.ComputedVisibility,
+			RawValueType:       secret.RawValueType,
+			ComputedValueType:  secret.ComputedValueType,
+			Note:               secret.Note,
+		}
+	}
+	return computed
+}
+
 // ParseSecrets parse secrets
 func ParseSecrets(response []byte) (map[string]ComputedSecret, error) {
-	var result map[string]interface{}
+	var result APISecretResponse
 	err := json.Unmarshal(response, &result)
 	if err != nil {
 		return nil, err
 	}
 
-	computed := map[string]ComputedSecret{}
-	secrets, ok := result["secrets"].(map[string]interface{})
-	if !ok {
-		utils.LogDebug(fmt.Sprintf("Unexpected type mismatch for Secrets, expected map[string]interface{}, got %T", result["secrets"]))
-		utils.HandleError(errors.New("Unable to parse API response"))
-	}
-	for key, secret := range secrets {
-		computedSecret := ComputedSecret{Name: key}
-		val, ok := secret.(map[string]interface{})
-		if !ok {
-			utils.LogDebug(fmt.Sprintf("Unexpected type mismatch for secret, expected map[string]interface{}, got %T", secret))
-			utils.HandleError(errors.New("Unable to parse API response"))
-		}
-		if val["raw"] != nil {
-			computedSecret.RawValue = val["raw"].(string)
-		}
-		if val["computed"] != nil {
-			computedSecret.ComputedValue = val["computed"].(string)
-		}
-		computed[key] = computedSecret
-	}
-
-	return computed, nil
+	return ConvertAPIToComputedSecrets(result.Secrets), nil
 }
 
 // ParseConfigServiceToken parse config service token

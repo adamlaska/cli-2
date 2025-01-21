@@ -15,11 +15,41 @@ limitations under the License.
 */
 package models
 
+type SecretValueType struct {
+	Type string `json:"type"`
+}
+
 // ComputedSecret holds all info about a secret
 type ComputedSecret struct {
-	Name          string `json:"name"`
-	RawValue      string `json:"raw"`
-	ComputedValue string `json:"computed"`
+	Name               string          `json:"name"`
+	RawValue           *string         `json:"raw"`
+	ComputedValue      *string         `json:"computed"`
+	RawVisibility      string          `json:"rawVisibility"`
+	ComputedVisibility string          `json:"computedVisibility"`
+	RawValueType       SecretValueType `json:"rawValueType"`
+	ComputedValueType  SecretValueType `json:"computedValueType"`
+	Note               string          `json:"note"`
+}
+
+// ChangeRequest can be used to smartly update secrets
+type ChangeRequest struct {
+	Name               string           `json:"name"`
+	OriginalName       interface{}      `json:"originalName"`
+	Value              interface{}      `json:"value"`
+	OriginalValue      interface{}      `json:"originalValue,omitempty"`
+	Visibility         *string          `json:"visibility,omitempty"`
+	OriginalVisibility *string          `json:"originalVisibility,omitempty"`
+	ValueType          *SecretValueType `json:"valueType,omitempty"`
+	OriginalValueType  *SecretValueType `json:"originalValueType,omitempty"`
+	ShouldPromote      *bool            `json:"shouldPromote,omitempty"`
+	ShouldDelete       *bool            `json:"shouldDelete,omitempty"`
+	ShouldConverge     *bool            `json:"shouldConverge,omitempty"`
+}
+
+// SecretNote contains a secret and its note
+type SecretNote struct {
+	Secret string `json:"secret"`
+	Note   string `json:"note"`
 }
 
 // WorkplaceSettings workplace settings
@@ -48,14 +78,17 @@ type EnvironmentInfo struct {
 
 // ConfigInfo project info
 type ConfigInfo struct {
-	Name           string `json:"name"`
-	Root           bool   `json:"root"`
-	Locked         bool   `json:"locked"`
-	Environment    string `json:"environment"`
-	Project        string `json:"project"`
-	CreatedAt      string `json:"created_at"`
-	InitialFetchAt string `json:"initial_fetch_at"`
-	LastFetchAt    string `json:"last_fetch_at"`
+	Name           string             `json:"name"`
+	Root           bool               `json:"root"`
+	Locked         bool               `json:"locked"`
+	Environment    string             `json:"environment"`
+	Project        string             `json:"project"`
+	CreatedAt      string             `json:"created_at"`
+	InitialFetchAt string             `json:"initial_fetch_at"`
+	LastFetchAt    string             `json:"last_fetch_at"`
+	Inheritable    bool               `json:"inheritable"`
+	Inherits       []ConfigDescriptor `json:"inherits"`
+	InheritedBy    []ConfigDescriptor `json:"inheritedBy"`
 }
 
 // ConfigLog a log
@@ -109,4 +142,44 @@ type ConfigServiceToken struct {
 	Environment string `json:"environment"`
 	Config      string `json:"config"`
 	Access      string `json:"access"`
+}
+
+// APISecretResponse is the response the secrets endpoint returns
+type APISecretResponse struct {
+	Success bool                 `json:"success"`
+	Secrets map[string]APISecret `json:"secrets"`
+}
+
+// APISecret is the object the API returns for a given secret
+type APISecret struct {
+	RawValue           *string         `json:"raw"`
+	ComputedValue      *string         `json:"computed"`
+	RawVisibility      string          `json:"rawVisibility"`
+	ComputedVisibility string          `json:"computedVisibility"`
+	RawValueType       SecretValueType `json:"rawValueType"`
+	ComputedValueType  SecretValueType `json:"computedValueType"`
+	Note               string          `json:"note"`
+}
+
+type ActorInfo struct {
+	Workplace    ActorWorkplaceInfo `json:"workplace"`
+	Type         string             `json:"type"`
+	TokenPreview string             `json:"token_preview"`
+	Slug         string             `json:"slug"`
+	CreatedAt    string             `json:"created_at"`
+	Name         string             `json:"name"`
+	LastSeenAt   string             `json:"last_seen_at"`
+}
+type ActorWorkplaceInfo struct {
+	Name string `json:"name"`
+	Slug string `json:"slug"`
+}
+
+type WatchSecrets struct {
+	Type string `json:"type"`
+}
+
+type ConfigDescriptor struct {
+	Project string `json:"project"`
+	Config  string `json:"config"`
 }

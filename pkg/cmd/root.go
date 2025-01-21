@@ -18,11 +18,13 @@ package cmd
 import (
 	"fmt"
 	"os"
-	"time"
+	"sync"
 
 	"github.com/DopplerHQ/cli/pkg/configuration"
 	"github.com/DopplerHQ/cli/pkg/controllers"
+	"github.com/DopplerHQ/cli/pkg/global"
 	"github.com/DopplerHQ/cli/pkg/http"
+	"github.com/DopplerHQ/cli/pkg/models"
 	"github.com/DopplerHQ/cli/pkg/printer"
 	"github.com/DopplerHQ/cli/pkg/utils"
 	"github.com/DopplerHQ/cli/pkg/version"
@@ -42,6 +44,8 @@ var rootCmd = &cobra.Command{
 		configuration.Setup()
 		configuration.LoadConfig()
 
+		controllers.CaptureCommand(cmd.CommandPath())
+
 		if utils.Debug && utils.Silent {
 			utils.LogWarning("--silent has no effect when used with --debug")
 		}
@@ -58,11 +62,28 @@ var rootCmd = &cobra.Command{
 		// tty is required to accept user input, otherwise the update can't be accepted/declined
 		isTTY := isatty.IsTerminal(os.Stdout.Fd())
 
+		// version check
+		if !configuration.GetFlag(models.FlagUpdateCheck) {
+			version.PerformVersionCheck = false
+		}
+		if version.PerformVersionCheck && configuration.CanReadEnv {
+			enable := os.Getenv("DOPPLER_ENABLE_VERSION_CHECK")
+			if enable == "false" {
+				logValueFromEnvironmentNotice("DOPPLER_ENABLE_VERSION_CHECK")
+				version.PerformVersionCheck = false
+			}
+		}
+		if version.PerformVersionCheck {
+			version.PerformVersionCheck = !utils.GetBoolFlagIfChanged(cmd, "no-check-version", !version.PerformVersionCheck)
+		}
+
 		// only run version check if we can print the results
 		// --plain doesn't normally affect logging output, but due to legacy reasons it does here
 		// also don't want to display updates if user doesn't want to be prompted (--no-prompt/--no-interactive)
 		if isTTY && utils.CanLogInfo() && !plain && canPrompt {
-			checkVersion(cmd.CommandPath())
+			if available, latestVersion := controllers.CheckUpdate(cmd.CommandPath()); available {
+				controllers.PromptToUpdate(latestVersion)
+			}
 		}
 	},
 	Run: func(cmd *cobra.Command, args []string) {
@@ -73,63 +94,13 @@ var rootCmd = &cobra.Command{
 	},
 }
 
-func checkVersion(command string) {
-	// disable version checking on commands commonly used in production workflows
-	// also disable when explicitly calling 'update' command to avoid checking twice
-	disabledCommands := []string{"run", "secrets download", "update"}
-	for _, disabledCommand := range disabledCommands {
-		if command == fmt.Sprintf("doppler %s", disabledCommand) {
-			utils.LogDebug("Skipping CLI upgrade check due to disallowed command")
-			return
-		}
-	}
-
-	if !version.PerformVersionCheck || version.IsDevelopment() {
-		return
-	}
-
-	prevVersionCheck := configuration.VersionCheck()
-	// don't check more often than every 24 hours
-	if !time.Now().After(prevVersionCheck.CheckedAt.Add(24 * time.Hour)) {
-		return
-	}
-
-	available, versionCheck, err := controllers.NewVersionAvailable(prevVersionCheck)
-	if err != nil {
-		// retry on next run
-		return
-	}
-
-	if !available {
-		utils.LogDebug("No CLI updates available")
-		// re-use existing version
-		versionCheck.LatestVersion = prevVersionCheck.LatestVersion
-	} else if utils.IsWindows() {
-		utils.Log(fmt.Sprintf("Update: Doppler CLI %s is available\n\nYou can update via 'scoop update doppler'\n", versionCheck.LatestVersion))
-	} else {
-		utils.Print(color.Green.Sprintf("An update is available."))
-
-		changes, apiError := controllers.CLIChangeLog()
-		if apiError.IsNil() {
-			printer.ChangeLog(changes, 1, false)
-			utils.Print("")
-		}
-
-		prompt := fmt.Sprintf("Install Doppler CLI %s", versionCheck.LatestVersion)
-		if utils.ConfirmationPrompt(prompt, true) {
-			installCLIUpdate()
-		}
-	}
-
-	configuration.SetVersionCheck(versionCheck)
-}
-
 // persistentValidArgsFunction Cobra parses flags after executing ValidArgsFunction, so we must manually initialize flags
 func persistentValidArgsFunction(cmd *cobra.Command) {
 	// more info https://github.com/spf13/cobra/issues/1291
 	loadFlags(cmd)
 }
 
+// this function runs before the config file has been loaded, so flags will not be honored
 func loadFlags(cmd *cobra.Command) {
 	var err error
 	var normalizedScope string
@@ -140,6 +111,17 @@ func loadFlags(cmd *cobra.Command) {
 	configuration.Scope = normalizedScope
 
 	configuration.CanReadEnv = !utils.GetBoolFlag(cmd, "no-read-env")
+
+	// User Config Dir
+	if configuration.CanReadEnv {
+		userConfigDir := os.Getenv("DOPPLER_CONFIG_DIR")
+		if userConfigDir != "" {
+			// this warning will always be printed since the config file's flags haven't been loaded yet
+			logValueFromEnvironmentNotice("DOPPLER_CONFIG_DIR")
+			configuration.SetConfigDir(userConfigDir)
+		}
+	}
+	configuration.SetConfigDir(utils.GetPathFlagIfChanged(cmd, "config-dir", configuration.UserConfigDir))
 	configuration.UserConfigFile = utils.GetPathFlagIfChanged(cmd, "configuration", configuration.UserConfigFile)
 	http.UseTimeout = !utils.GetBoolFlag(cmd, "no-timeout")
 
@@ -157,9 +139,6 @@ func loadFlags(cmd *cobra.Command) {
 
 	// no-file is used by the 'secrets download' command to output secrets to stdout
 	utils.Silent = utils.GetBoolFlagIfChanged(cmd, "no-file", utils.Silent)
-
-	// version check
-	version.PerformVersionCheck = !utils.GetBoolFlagIfChanged(cmd, "no-check-version", !version.PerformVersionCheck)
 }
 
 func deprecatedCommand(newCommand string) {
@@ -183,7 +162,15 @@ func Execute() {
 		}
 	}()
 
-	if err := rootCmd.Execute(); err != nil {
+	// initialize the wait group before executing the command
+	global.WaitGroup = new(sync.WaitGroup)
+
+	err := rootCmd.Execute()
+
+	// wait for group before checking error
+	global.WaitGroup.Wait()
+
+	if err != nil {
 		os.Exit(1)
 	}
 }
@@ -216,7 +203,14 @@ func init() {
 
 	rootCmd.PersistentFlags().Bool("no-read-env", false, "do not read config from the environment")
 	rootCmd.PersistentFlags().String("scope", configuration.Scope, "the directory to scope your config to")
+	rootCmd.PersistentFlags().String("config-dir", configuration.UserConfigDir, "config directory")
 	rootCmd.PersistentFlags().String("configuration", configuration.UserConfigFile, "config file")
+	if err := rootCmd.PersistentFlags().MarkDeprecated("configuration", "please use --config-dir instead"); err != nil {
+		utils.HandleError(err)
+	}
+	if err := rootCmd.PersistentFlags().MarkHidden("configuration"); err != nil {
+		utils.HandleError(err)
+	}
 	rootCmd.PersistentFlags().BoolVar(&utils.OutputJSON, "json", utils.OutputJSON, "output json")
 	rootCmd.PersistentFlags().BoolVar(&utils.Debug, "debug", utils.Debug, "output additional information")
 	rootCmd.PersistentFlags().BoolVar(&printConfig, "print-config", printConfig, "output active configuration")

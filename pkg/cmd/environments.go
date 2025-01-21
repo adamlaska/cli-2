@@ -68,10 +68,12 @@ var environmentsRenameCmd = &cobra.Command{
 func environments(cmd *cobra.Command, args []string) {
 	jsonFlag := utils.OutputJSON
 	localConfig := configuration.LocalConfig(cmd)
+	number := utils.GetIntFlag(cmd, "number", 16)
+	page := utils.GetIntFlag(cmd, "page", 16)
 
 	utils.RequireValue("token", localConfig.Token.Value)
 
-	info, err := http.GetEnvironments(localConfig.APIHost.Value, utils.GetBool(localConfig.VerifyTLS.Value, true), localConfig.Token.Value, localConfig.EnclaveProject.Value)
+	info, err := http.GetEnvironments(localConfig.APIHost.Value, utils.GetBool(localConfig.VerifyTLS.Value, true), localConfig.Token.Value, localConfig.EnclaveProject.Value, page, number)
 	if !err.IsNil() {
 		utils.HandleError(err.Unwrap(), err.Message)
 	}
@@ -146,7 +148,7 @@ func deleteEnvironment(cmd *cobra.Command, args []string) {
 		}
 
 		if !utils.Silent {
-			info, err := http.GetEnvironments(localConfig.APIHost.Value, utils.GetBool(localConfig.VerifyTLS.Value, true), localConfig.Token.Value, localConfig.EnclaveProject.Value)
+			info, err := http.GetEnvironments(localConfig.APIHost.Value, utils.GetBool(localConfig.VerifyTLS.Value, true), localConfig.Token.Value, localConfig.EnclaveProject.Value, 1, 100)
 			if !err.IsNil() {
 				utils.HandleError(err.Unwrap(), err.Message)
 			}
@@ -197,21 +199,38 @@ func renameEnvironment(cmd *cobra.Command, args []string) {
 
 func init() {
 	environmentsGetCmd.Flags().StringP("project", "p", "", "project (e.g. backend)")
+	if err := environmentsGetCmd.RegisterFlagCompletionFunc("project", projectIDsValidArgs); err != nil {
+		utils.HandleError(err)
+	}
 	environmentsCmd.AddCommand(environmentsGetCmd)
 
 	environmentsCreateCmd.Flags().StringP("project", "p", "", "project (e.g. backend)")
+	if err := environmentsCreateCmd.RegisterFlagCompletionFunc("project", projectIDsValidArgs); err != nil {
+		utils.HandleError(err)
+	}
 	environmentsCmd.AddCommand(environmentsCreateCmd)
 
 	environmentsDeleteCmd.Flags().StringP("project", "p", "", "project (e.g. backend)")
+	if err := environmentsDeleteCmd.RegisterFlagCompletionFunc("project", projectIDsValidArgs); err != nil {
+		utils.HandleError(err)
+	}
 	environmentsDeleteCmd.Flags().BoolP("yes", "y", false, "proceed without confirmation")
 	environmentsCmd.AddCommand(environmentsDeleteCmd)
 
 	environmentsRenameCmd.Flags().StringP("project", "p", "", "project (e.g. backend)")
+	if err := environmentsRenameCmd.RegisterFlagCompletionFunc("project", projectIDsValidArgs); err != nil {
+		utils.HandleError(err)
+	}
 	environmentsRenameCmd.Flags().BoolP("yes", "y", false, "proceed without confirmation")
 	environmentsRenameCmd.Flags().String("name", "", "new name")
 	environmentsRenameCmd.Flags().String("slug", "", "new slug")
 	environmentsCmd.AddCommand(environmentsRenameCmd)
 
 	environmentsCmd.Flags().StringP("project", "p", "", "project (e.g. backend)")
+	if err := environmentsCmd.RegisterFlagCompletionFunc("project", projectIDsValidArgs); err != nil {
+		utils.HandleError(err)
+	}
+	environmentsCmd.Flags().IntP("number", "n", 100, "max number of environments to display")
+	environmentsCmd.Flags().Int("page", 1, "page to display")
 	rootCmd.AddCommand(environmentsCmd)
 }

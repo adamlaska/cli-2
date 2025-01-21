@@ -16,6 +16,7 @@ limitations under the License.
 package cmd
 
 import (
+	"github.com/DopplerHQ/cli/pkg/utils"
 	"github.com/spf13/cobra"
 )
 
@@ -51,18 +52,42 @@ var enclaveConfigsLogsRollbackCmd = &cobra.Command{
 
 func init() {
 	enclaveConfigsLogsCmd.Flags().StringP("project", "p", "", "enclave project (e.g. backend)")
+	if err := enclaveConfigsLogsCmd.RegisterFlagCompletionFunc("project", projectIDsValidArgs); err != nil {
+		utils.HandleError(err)
+	}
 	enclaveConfigsLogsCmd.Flags().StringP("config", "c", "", "enclave config (e.g. dev)")
-	// TODO: hide this flag until the api supports it
-	// enclaveConfigsLogsCmd.Flags().IntP("number", "n", 5, "max number of logs to display")
+	if err := enclaveConfigsLogsCmd.RegisterFlagCompletionFunc("config", configNamesValidArgs); err != nil {
+		utils.HandleError(err)
+	}
+	enclaveConfigsLogsCmd.Flags().Int("page", 1, "log page to display")
+	enclaveConfigsLogsCmd.Flags().IntP("number", "n", 20, "max number of logs to display")
 	enclaveConfigsCmd.AddCommand(enclaveConfigsLogsCmd)
 
 	enclaveConfigsLogsGetCmd.Flags().String("log", "", "audit log id")
+	if err := enclaveConfigsLogsGetCmd.RegisterFlagCompletionFunc("log", configLogIDsValidArgs); err != nil {
+		utils.HandleError(err)
+	}
 	enclaveConfigsLogsGetCmd.Flags().StringP("project", "p", "", "enclave project (e.g. backend)")
+	if err := enclaveConfigsLogsGetCmd.RegisterFlagCompletionFunc("project", projectIDsValidArgs); err != nil {
+		utils.HandleError(err)
+	}
 	enclaveConfigsLogsGetCmd.Flags().StringP("config", "c", "", "enclave config (e.g. dev)")
+	if err := enclaveConfigsLogsGetCmd.RegisterFlagCompletionFunc("config", configNamesValidArgs); err != nil {
+		utils.HandleError(err)
+	}
 	enclaveConfigsLogsCmd.AddCommand(enclaveConfigsLogsGetCmd)
 
 	enclaveConfigsLogsRollbackCmd.Flags().String("log", "", "audit log id")
+	if err := enclaveConfigsLogsRollbackCmd.RegisterFlagCompletionFunc("log", configLogIDsValidArgs); err != nil {
+		utils.HandleError(err)
+	}
 	enclaveConfigsLogsRollbackCmd.Flags().StringP("project", "p", "", "enclave project (e.g. backend)")
+	if err := enclaveConfigsLogsRollbackCmd.RegisterFlagCompletionFunc("project", projectIDsValidArgs); err != nil {
+		utils.HandleError(err)
+	}
 	enclaveConfigsLogsRollbackCmd.Flags().StringP("config", "c", "", "enclave config (e.g. dev)")
+	if err := enclaveConfigsLogsRollbackCmd.RegisterFlagCompletionFunc("config", configNamesValidArgs); err != nil {
+		utils.HandleError(err)
+	}
 	enclaveConfigsLogsCmd.AddCommand(enclaveConfigsLogsRollbackCmd)
 }

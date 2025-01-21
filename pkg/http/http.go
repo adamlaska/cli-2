@@ -28,6 +28,7 @@ import (
 	"net/url"
 	"runtime"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/DopplerHQ/cli/pkg/utils"
@@ -50,10 +51,28 @@ var DNSResolverAddress = "1.1.1.1:53"
 var DNSResolverProto = "udp"
 var DNSResolverTimeout = time.Duration(5) * time.Second
 
+func generateURL(host string, uri string, params []queryParam) (*url.URL, error) {
+	host = strings.TrimSuffix(host, "/")
+	if !strings.HasPrefix(uri, "/") {
+		uri = fmt.Sprintf("/%s", uri)
+	}
+	url, err := url.Parse(fmt.Sprintf("%s%s", host, uri))
+	if err != nil {
+		return nil, err
+	}
+
+	values := url.Query()
+	for _, param := range params {
+		values.Add(param.Key, param.Value)
+	}
+	url.RawQuery = values.Encode()
+
+	return url, nil
+}
+
 // GetRequest perform HTTP GET
-func GetRequest(host string, verifyTLS bool, headers map[string]string, uri string, params []queryParam) (int, http.Header, []byte, error) {
-	url := fmt.Sprintf("%s%s", host, uri)
-	req, err := http.NewRequest("GET", url, nil)
+func GetRequest(url *url.URL, verifyTLS bool, headers map[string]string) (int, http.Header, []byte, error) {
+	req, err := http.NewRequest("GET", url.String(), nil)
 	if err != nil {
 		return 0, nil, nil, err
 	}
@@ -62,7 +81,7 @@ func GetRequest(host string, verifyTLS bool, headers map[string]string, uri stri
 		req.Header.Set(key, value)
 	}
 
-	statusCode, respHeaders, body, err := performRequest(req, verifyTLS, params)
+	statusCode, respHeaders, body, err := performRequest(req, verifyTLS)
 	if err != nil {
 		return statusCode, respHeaders, body, err
 	}
@@ -71,9 +90,8 @@ func GetRequest(host string, verifyTLS bool, headers map[string]string, uri stri
 }
 
 // PostRequest perform HTTP POST
-func PostRequest(host string, verifyTLS bool, headers map[string]string, uri string, params []queryParam, body []byte) (int, http.Header, []byte, error) {
-	url := fmt.Sprintf("%s%s", host, uri)
-	req, err := http.NewRequest("POST", url, bytes.NewReader(body))
+func PostRequest(url *url.URL, verifyTLS bool, headers map[string]string, body []byte) (int, http.Header, []byte, error) {
+	req, err := http.NewRequest("POST", url.String(), bytes.NewReader(body))
 	if err != nil {
 		return 0, nil, nil, err
 	}
@@ -82,7 +100,7 @@ func PostRequest(host string, verifyTLS bool, headers map[string]string, uri str
 		req.Header.Set(key, value)
 	}
 
-	statusCode, respHeaders, body, err := performRequest(req, verifyTLS, params)
+	statusCode, respHeaders, body, err := performRequest(req, verifyTLS)
 	if err != nil {
 		return statusCode, respHeaders, body, err
 	}
@@ -91,9 +109,8 @@ func PostRequest(host string, verifyTLS bool, headers map[string]string, uri str
 }
 
 // PutRequest perform HTTP PUT
-func PutRequest(host string, verifyTLS bool, headers map[string]string, uri string, params []queryParam, body []byte) (int, http.Header, []byte, error) {
-	url := fmt.Sprintf("%s%s", host, uri)
-	req, err := http.NewRequest("PUT", url, bytes.NewReader(body))
+func PutRequest(url *url.URL, verifyTLS bool, headers map[string]string, body []byte) (int, http.Header, []byte, error) {
+	req, err := http.NewRequest("PUT", url.String(), bytes.NewReader(body))
 	if err != nil {
 		return 0, nil, nil, err
 	}
@@ -102,7 +119,7 @@ func PutRequest(host string, verifyTLS bool, headers map[string]string, uri stri
 		req.Header.Set(key, value)
 	}
 
-	statusCode, respHeaders, body, err := performRequest(req, verifyTLS, params)
+	statusCode, respHeaders, body, err := performRequest(req, verifyTLS)
 	if err != nil {
 		return statusCode, respHeaders, body, err
 	}
@@ -111,9 +128,8 @@ func PutRequest(host string, verifyTLS bool, headers map[string]string, uri stri
 }
 
 // DeleteRequest perform HTTP DELETE
-func DeleteRequest(host string, verifyTLS bool, headers map[string]string, uri string, params []queryParam) (int, http.Header, []byte, error) {
-	url := fmt.Sprintf("%s%s", host, uri)
-	req, err := http.NewRequest("DELETE", url, nil)
+func DeleteRequest(url *url.URL, verifyTLS bool, headers map[string]string, body []byte) (int, http.Header, []byte, error) {
+	req, err := http.NewRequest("DELETE", url.String(), bytes.NewReader(body))
 	if err != nil {
 		return 0, nil, nil, err
 	}
@@ -122,7 +138,7 @@ func DeleteRequest(host string, verifyTLS bool, headers map[string]string, uri s
 		req.Header.Set(key, value)
 	}
 
-	statusCode, respHeaders, body, err := performRequest(req, verifyTLS, params)
+	statusCode, respHeaders, body, err := performRequest(req, verifyTLS)
 	if err != nil {
 		return statusCode, respHeaders, body, err
 	}
@@ -130,7 +146,7 @@ func DeleteRequest(host string, verifyTLS bool, headers map[string]string, uri s
 	return statusCode, respHeaders, body, nil
 }
 
-func performRequest(req *http.Request, verifyTLS bool, params []queryParam) (int, http.Header, []byte, error) {
+func request(req *http.Request, verifyTLS bool, allowTimeout bool) (*http.Response, error) {
 	// set headers
 	req.Header.Set("client-sdk", "go-cli")
 	req.Header.Set("client-version", version.ProgramVersion)
@@ -142,19 +158,12 @@ func performRequest(req *http.Request, verifyTLS bool, params []queryParam) (int
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	// set url query parameters
-	query := req.URL.Query()
-	for _, param := range params {
-		query.Add(param.Key, param.Value)
-	}
-	req.URL.RawQuery = query.Encode()
-
 	// close the connection after reading the response, to help prevent socket exhaustion
 	req.Close = true
 
 	client := &http.Client{}
 	// set http timeout
-	if UseTimeout {
+	if allowTimeout && UseTimeout {
 		client.Timeout = TimeoutDuration
 	}
 
@@ -188,39 +197,55 @@ func performRequest(req *http.Request, verifyTLS bool, params []queryParam) (int
 		return dialer.DialContext(ctx, network, addr)
 	}
 
+	proxyUrl, err := http.ProxyFromEnvironment(req)
+	if err != nil {
+		utils.LogDebug("Unable to read proxy from environment")
+		utils.LogDebugError(err)
+		proxyUrl = nil
+	}
+	if proxyUrl != nil {
+		utils.LogDebug(fmt.Sprintf("Using proxy %s", proxyUrl))
+	}
+
 	client.Transport = &http.Transport{
 		// disable keep alives to prevent multiple CLI instances from exhausting the
 		// OS's available network sockets. this adds a negligible performance penalty
 		DisableKeepAlives: true,
 		TLSClientConfig:   tlsConfig,
 		DialContext:       dialContext,
+		Proxy:             http.ProxyURL(proxyUrl),
 	}
+
+	utils.LogDebug(fmt.Sprintf("Performing HTTP %s to %s", req.Method, req.URL))
 
 	startTime := time.Now()
 	var response *http.Response
 	response = nil
 
-	requestErr := retry(RequestAttempts, 100*time.Millisecond, func() error {
+	err = utils.Retry(RequestAttempts, 500*time.Millisecond, func() error {
 		// disable semgrep rule b/c we properly check that resp isn't nil before using it within the err block
 		resp, err := client.Do(req) // nosemgrep: trailofbits.go.invalid-usage-of-modified-variable.invalid-usage-of-modified-variable
 		if err != nil {
 			if resp != nil {
-				defer resp.Body.Close()
+				defer func() {
+					if closeErr := resp.Body.Close(); closeErr != nil {
+						utils.LogDebug(closeErr.Error())
+					}
+				}()
 			}
 
 			utils.LogDebug(err.Error())
 
-			if isTimeout(err) {
+			if isTimeout(err) || errors.Is(err, syscall.ECONNREFUSED) {
 				// retry request
 				return err
 			}
 
-			return StopRetry{err}
+			return utils.StopRetryError(err)
 		}
 
 		response = resp
 
-		utils.LogDebug(fmt.Sprintf("Performing HTTP %s to %s", req.Method, req.URL))
 		if requestID := resp.Header.Get("x-request-id"); requestID != "" {
 			utils.LogDebug(fmt.Sprintf("Request ID %s", requestID))
 		}
@@ -230,7 +255,7 @@ func performRequest(req *http.Request, verifyTLS bool, params []queryParam) (int
 		}
 
 		contentType := resp.Header.Get("content-type")
-		if isRetry(resp.StatusCode, contentType) {
+		if IsRetry(resp.StatusCode, contentType) {
 			// start logging retries after 10 seconds so it doesn't feel like we've frozen
 			// we subtract 1 millisecond so that we always win the race against a request that exhausts its full 10 second time out
 			if time.Now().After(startTime.Add(10 * time.Second).Add(-1 * time.Millisecond)) {
@@ -240,23 +265,72 @@ func performRequest(req *http.Request, verifyTLS bool, params []queryParam) (int
 		}
 
 		// we cannot recover from this error code; accept defeat
-		return StopRetry{errors.New("Request failed")}
+		return utils.StopRetryError(errors.New("Request failed"))
 	})
 
+	return response, err
+}
+
+func performSSERequest(req *http.Request, verifyTLS bool, handler func([]byte)) (int, http.Header, error) {
+	// nosemgrep: trailofbits.go.invalid-usage-of-modified-variable.invalid-usage-of-modified-variable
+	response, requestErr := request(req, verifyTLS, false)
+	if requestErr != nil {
+		statusCode := 0
+		if response != nil {
+			statusCode = response.StatusCode
+		}
+		return statusCode, nil, requestErr
+	}
+
 	if response != nil {
-		defer response.Body.Close()
+		defer func() {
+			if closeErr := response.Body.Close(); closeErr != nil {
+				utils.LogDebug(closeErr.Error())
+			}
+		}()
+	}
+
+	headers := response.Header.Clone()
+
+	for {
+		s := 1024
+		data := make([]byte, s)
+		n, err := response.Body.Read(data)
+		// this shouldn't occur, but log anyway to aid with debugging
+		if n == s {
+			utils.LogDebug(fmt.Sprintf("Response reached max buffer size of %d bytes", s))
+		}
+		// From Go docs for Reader.Read:
+		// "Callers should always process the n > 0 bytes returned before considering the error err."
+		if n > 0 {
+			go handler(data[:n])
+		}
+		if err != nil {
+			return response.StatusCode, headers, err
+		}
+	}
+}
+
+func performRequest(req *http.Request, verifyTLS bool) (int, http.Header, []byte, error) {
+	response, requestErr := request(req, verifyTLS, true)
+	if response != nil {
+		defer func() {
+			if closeErr := response.Body.Close(); closeErr != nil {
+				utils.LogDebug(closeErr.Error())
+			}
+		}()
 	}
 
 	if requestErr != nil && response == nil {
 		return 0, nil, nil, requestErr
 	}
 
+	headers := response.Header.Clone()
+
 	body, err := ioutil.ReadAll(response.Body)
 	if err != nil {
 		return response.StatusCode, nil, nil, err
 	}
-
-	headers := response.Header.Clone()
 
 	// success
 	if requestErr == nil {
@@ -282,7 +356,7 @@ func isSuccess(statusCode int) bool {
 	return (statusCode >= 200 && statusCode <= 299) || (statusCode >= 300 && statusCode <= 399)
 }
 
-func isRetry(statusCode int, contentType string) bool {
+func IsRetry(statusCode int, contentType string) bool {
 	return (statusCode == 429) ||
 		(statusCode >= 100 && statusCode <= 199) ||
 		// don't retry 5xx errors w/ a JSON body

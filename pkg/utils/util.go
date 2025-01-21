@@ -18,6 +18,7 @@ package utils
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -105,18 +106,24 @@ func Cwd() string {
 }
 
 // RunCommand runs the specified command
-func RunCommand(command []string, env []string, inFile *os.File, outFile *os.File, errFile *os.File, forwardSignals bool, onExit func()) (int, error) {
-	cmd := exec.Command(command[0], command[1:]...) // #nosec G204
+func RunCommand(command []string, env []string, inFile io.Reader, outFile io.Writer, errFile io.Writer, forwardSignals bool) (*exec.Cmd, error) {
+	cmd := exec.Command(command[0], command[1:]...) // #nosec G204 nosemgrep: semgrep_configs.prohibit-exec-command
+	// Resolves https://github.com/DopplerHQ/cli/issues/415
+	if errors.Is(cmd.Err, exec.ErrDot) {
+		cmd.Err = nil
+	}
+
 	cmd.Env = env
 	cmd.Stdin = inFile
 	cmd.Stdout = outFile
 	cmd.Stderr = errFile
 
-	return execCommand(cmd, forwardSignals, onExit)
+	err := execCommand(cmd, forwardSignals)
+	return cmd, err
 }
 
 // RunCommandString runs the specified command string
-func RunCommandString(command string, env []string, inFile *os.File, outFile *os.File, errFile *os.File, forwardSignals bool, onExit func()) (int, error) {
+func RunCommandString(command string, env []string, inFile io.Reader, outFile io.Writer, errFile io.Writer, forwardSignals bool) (*exec.Cmd, error) {
 	shell := [2]string{"sh", "-c"}
 	if IsWindows() {
 		shell = [2]string{"cmd", "/C"}
@@ -131,27 +138,23 @@ func RunCommandString(command string, env []string, inFile *os.File, outFile *os
 			}
 		}
 	}
-	cmd := exec.Command(shell[0], shell[1], command) // #nosec G204
+	cmd := exec.Command(shell[0], shell[1], command) // #nosec G204 nosemgrep: semgrep_configs.prohibit-exec-command
 	cmd.Env = env
 	cmd.Stdin = inFile
 	cmd.Stdout = outFile
 	cmd.Stderr = errFile
 
-	return execCommand(cmd, forwardSignals, onExit)
+	err := execCommand(cmd, forwardSignals)
+	return cmd, err
 }
 
-func execCommand(cmd *exec.Cmd, forwardSignals bool, onExit func()) (int, error) {
-	if onExit != nil {
-		// ensure the onExit handler is called, regardless of how/when we return
-		defer onExit()
-	}
-
+func execCommand(cmd *exec.Cmd, forwardSignals bool) error {
 	// signal handling logic adapted from aws-vault https://github.com/99designs/aws-vault/
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan)
 
 	if err := cmd.Start(); err != nil {
-		return 1, err
+		return err
 	}
 
 	// handle all signals
@@ -170,6 +173,10 @@ func execCommand(cmd *exec.Cmd, forwardSignals bool, onExit func()) (int, error)
 		}
 	}()
 
+	return nil
+}
+
+func WaitCommand(cmd *exec.Cmd) (int, error) {
 	if err := cmd.Wait(); err != nil {
 		// ignore errors
 		cmd.Process.Signal(os.Kill) // #nosec G104
@@ -186,6 +193,11 @@ func execCommand(cmd *exec.Cmd, forwardSignals bool, onExit func()) (int, error)
 		return 2, fmt.Errorf("Unexpected ProcessState type, expected syscall.WaitStatus, got %T", waitStatus)
 	}
 	return waitStatus.ExitStatus(), nil
+}
+
+func IsProcessRunning(p *os.Process) bool {
+	err := p.Signal(syscall.Signal(0))
+	return err == nil
 }
 
 // RequireValue throws an error if a value is blank
@@ -387,6 +399,12 @@ func IsWindows() bool {
 	return runtime.GOOS == "windows"
 }
 
+// IsMINGW64 whether the host os is running in a MINGW64-based
+// environment like Git Bash, Cygwin, etc.
+func IsMINGW64() bool {
+	return IsWindows() && os.Getenv("MSYSTEM") == "MINGW64"
+}
+
 // IsMacOS whether the host os is macOS
 func IsMacOS() bool {
 	return runtime.GOOS == "darwin"
@@ -411,4 +429,13 @@ func RedactAuthToken(token string) string {
 	}
 
 	return "[REDACTED]"
+}
+
+func Contains[T comparable](s []T, e T) bool {
+	for _, v := range s {
+		if v == e {
+			return true
+		}
+	}
+	return false
 }

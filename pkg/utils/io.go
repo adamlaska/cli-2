@@ -16,10 +16,12 @@ limitations under the License.
 package utils
 
 import (
+	"bufio"
 	"errors"
 	"fmt"
 	"io/ioutil"
 	"os"
+	"strings"
 )
 
 // RestrictedFilePerms perms used for creating restrictied files meant to be accessible only to the user
@@ -61,18 +63,18 @@ func WriteTempFile(name string, data []byte, perm os.FileMode) (string, error) {
 		return "", err
 	}
 
-	LogDebug(fmt.Sprintf("Writing to temp file %s", tmpFile.Name()))
+	tmpFileName := tmpFile.Name()
+	LogDebug(fmt.Sprintf("Writing to temp file %s", tmpFileName))
 	if _, err := tmpFile.Write(data); err != nil {
-		return "", err
+		return tmpFileName, err
 	}
 
-	tmpFileName := tmpFile.Name()
 	if err := tmpFile.Close(); err != nil {
-		return "", err
+		return tmpFileName, err
 	}
 
 	if err := os.Chmod(tmpFileName, perm); err != nil {
-		return "", err
+		return tmpFileName, err
 	}
 
 	return tmpFileName, nil
@@ -87,4 +89,34 @@ func HasDataOnStdIn() (bool, error) {
 
 	hasData := (stat.Mode() & os.ModeCharDevice) == 0
 	return hasData, nil
+}
+
+func GetStdIn() (*string, error) {
+	// read from stdin
+	hasData, e := HasDataOnStdIn()
+	if e != nil {
+		return nil, e
+	}
+
+	if !hasData {
+		return nil, nil
+	}
+
+	var input []string
+	scanner := bufio.NewScanner(os.Stdin)
+	for {
+		if ok := scanner.Scan(); !ok {
+			if e := scanner.Err(); e != nil {
+				return nil, e
+			}
+
+			break
+		}
+
+		s := scanner.Text()
+		input = append(input, s)
+	}
+
+	s := strings.Join(input, "\n")
+	return &s, nil
 }

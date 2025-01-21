@@ -61,9 +61,22 @@ var configsDeleteCmd = &cobra.Command{
 var configsUpdateCmd = &cobra.Command{
 	Use:               "update [config]",
 	Short:             "Update a config",
+	Long:              "Update properties about a config, such as its name, inheritability flag, and inheritances",
 	Args:              cobra.MaximumNArgs(1),
 	ValidArgsFunction: configNamesValidArgs,
 	Run:               updateConfigs,
+	Example: `Updating a config's name
+$ doppler configs update --project proj --config dev_branch --name dev_branch2
+
+Enabling a config to be inherited
+$ doppler configs update --project proj --config dev --inheritable=true
+
+Configuring which configs the given config inherits
+Note: The inherits flag accepts a comma separated list of PROJ_NAME.CONF_NAME
+$ doppler configs update --project proj --config dev --inherits="shared-db.dev,shared-api.dev"
+
+To clear the inheritance list, pass in an empty value:
+$ doppler configs update --project proj --config dev --inherits=`,
 }
 
 var configsLockCmd = &cobra.Command{
@@ -92,11 +105,14 @@ var configsCloneCmd = &cobra.Command{
 
 func configs(cmd *cobra.Command, args []string) {
 	jsonFlag := utils.OutputJSON
+	environment := cmd.Flag("environment").Value.String()
+	number := utils.GetIntFlag(cmd, "number", 16)
+	page := utils.GetIntFlag(cmd, "page", 16)
 	localConfig := configuration.LocalConfig(cmd)
 
 	utils.RequireValue("token", localConfig.Token.Value)
 
-	configs, err := http.GetConfigs(localConfig.APIHost.Value, utils.GetBool(localConfig.VerifyTLS.Value, true), localConfig.Token.Value, localConfig.EnclaveProject.Value)
+	configs, err := http.GetConfigs(localConfig.APIHost.Value, utils.GetBool(localConfig.VerifyTLS.Value, true), localConfig.Token.Value, localConfig.EnclaveProject.Value, environment, page, number)
 	if !err.IsNil() {
 		utils.HandleError(err.Unwrap(), err.Message)
 	}
@@ -181,7 +197,7 @@ func deleteConfigs(cmd *cobra.Command, args []string) {
 		}
 
 		if !utils.Silent {
-			configs, err := http.GetConfigs(localConfig.APIHost.Value, utils.GetBool(localConfig.VerifyTLS.Value, true), localConfig.Token.Value, localConfig.EnclaveProject.Value)
+			configs, err := http.GetConfigs(localConfig.APIHost.Value, utils.GetBool(localConfig.VerifyTLS.Value, true), localConfig.Token.Value, localConfig.EnclaveProject.Value, "", 1, 100)
 			if !err.IsNil() {
 				utils.HandleError(err.Unwrap(), err.Message)
 			}
@@ -193,34 +209,77 @@ func deleteConfigs(cmd *cobra.Command, args []string) {
 
 func updateConfigs(cmd *cobra.Command, args []string) {
 	jsonFlag := utils.OutputJSON
+
+	nameSet := cmd.Flags().Changed("name")
+	inheritableSet := cmd.Flags().Changed("inheritable")
+	inheritsSet := cmd.Flags().Changed("inherits")
+
+	varsChanged := 0
+	for _, v := range []bool{nameSet, inheritableSet, inheritsSet} {
+		if v {
+			varsChanged++
+		}
+	}
+
+	if varsChanged != 1 {
+		utils.HandleError(fmt.Errorf("Exactly one of name, inheritable, and inherits must be specified"))
+	}
+
 	name := cmd.Flag("name").Value.String()
+	inheritable := utils.GetBoolFlag(cmd, "inheritable")
+	inherits := cmd.Flag("inherits").Value.String()
 	yes := utils.GetBoolFlag(cmd, "yes")
 	localConfig := configuration.LocalConfig(cmd)
 
 	utils.RequireValue("token", localConfig.Token.Value)
-	utils.RequireValue("name", name)
 
 	config := localConfig.EnclaveConfig.Value
 	if len(args) > 0 {
 		config = args[0]
 	}
 
-	if !yes {
-		utils.PrintWarning("Renaming this config may break your current deploys.")
-		if !utils.ConfirmationPrompt("Continue?", false) {
-			utils.Log("Aborting")
-			return
+	if nameSet {
+		if !yes {
+			utils.PrintWarning("Renaming this config may break your current deploys.")
+			if !utils.ConfirmationPrompt("Continue?", false) {
+				utils.Log("Aborting")
+				return
+			}
+		}
+
+		info, err := http.UpdateConfig(localConfig.APIHost.Value, utils.GetBool(localConfig.VerifyTLS.Value, true), localConfig.Token.Value, localConfig.EnclaveProject.Value, config, name)
+		if !err.IsNil() {
+			utils.HandleError(err.Unwrap(), err.Message)
+		}
+
+		if !utils.Silent {
+			printer.ConfigInfo(info, jsonFlag)
+		}
+
+	}
+
+	if inheritableSet {
+		info, err := http.UpdateConfigInheritable(localConfig.APIHost.Value, utils.GetBool(localConfig.VerifyTLS.Value, true), localConfig.Token.Value, localConfig.EnclaveProject.Value, config, inheritable)
+		if !err.IsNil() {
+			utils.HandleError(err.Unwrap(), err.Message)
+		}
+
+		if !utils.Silent {
+			printer.ConfigInfo(info, jsonFlag)
 		}
 	}
 
-	info, err := http.UpdateConfig(localConfig.APIHost.Value, utils.GetBool(localConfig.VerifyTLS.Value, true), localConfig.Token.Value, localConfig.EnclaveProject.Value, config, name)
-	if !err.IsNil() {
-		utils.HandleError(err.Unwrap(), err.Message)
+	if inheritsSet {
+		info, err := http.UpdateConfigInherits(localConfig.APIHost.Value, utils.GetBool(localConfig.VerifyTLS.Value, true), localConfig.Token.Value, localConfig.EnclaveProject.Value, config, inherits)
+		if !err.IsNil() {
+			utils.HandleError(err.Unwrap(), err.Message)
+		}
+
+		if !utils.Silent {
+			printer.ConfigInfo(info, jsonFlag)
+		}
 	}
 
-	if !utils.Silent {
-		printer.ConfigInfo(info, jsonFlag)
-	}
 }
 
 func lockConfigs(cmd *cobra.Command, args []string) {
@@ -352,42 +411,92 @@ func unlockedConfigNamesValidArgs(cmd *cobra.Command, args []string, toComplete 
 
 func init() {
 	configsCmd.Flags().StringP("project", "p", "", "project (e.g. backend)")
+	if err := configsCmd.RegisterFlagCompletionFunc("project", projectIDsValidArgs); err != nil {
+		utils.HandleError(err)
+	}
+	configsCmd.Flags().StringP("environment", "e", "", "config environment")
+	if err := configsCmd.RegisterFlagCompletionFunc("environment", configEnvironmentIDsValidArgs); err != nil {
+		utils.HandleError(err)
+	}
+	configsCmd.Flags().IntP("number", "n", 100, "max number of configs to display")
+	configsCmd.Flags().Int("page", 1, "page to display")
 
 	configsGetCmd.Flags().StringP("project", "p", "", "project (e.g. backend)")
+	if err := configsGetCmd.RegisterFlagCompletionFunc("project", projectIDsValidArgs); err != nil {
+		utils.HandleError(err)
+	}
 	configsGetCmd.Flags().StringP("config", "c", "", "config (e.g. dev)")
+	if err := configsGetCmd.RegisterFlagCompletionFunc("config", configNamesValidArgs); err != nil {
+		utils.HandleError(err)
+	}
 	configsCmd.AddCommand(configsGetCmd)
 
 	configsCreateCmd.Flags().StringP("project", "p", "", "project (e.g. backend)")
+	if err := configsCreateCmd.RegisterFlagCompletionFunc("project", projectIDsValidArgs); err != nil {
+		utils.HandleError(err)
+	}
 	configsCreateCmd.Flags().String("name", "", "config name")
 	configsCreateCmd.Flags().StringP("environment", "e", "", "config environment")
+	if err := configsCreateCmd.RegisterFlagCompletionFunc("environment", configEnvironmentIDsValidArgs); err != nil {
+		utils.HandleError(err)
+	}
 	configsCmd.AddCommand(configsCreateCmd)
 
 	configsUpdateCmd.Flags().StringP("project", "p", "", "project (e.g. backend)")
-	configsUpdateCmd.Flags().StringP("config", "c", "", "config (e.g. dev)")
-	configsUpdateCmd.Flags().String("name", "", "config name")
-	if err := configsUpdateCmd.MarkFlagRequired("name"); err != nil {
+	if err := configsUpdateCmd.RegisterFlagCompletionFunc("project", projectIDsValidArgs); err != nil {
 		utils.HandleError(err)
 	}
+	configsUpdateCmd.Flags().StringP("config", "c", "", "config (e.g. dev)")
+	if err := configsUpdateCmd.RegisterFlagCompletionFunc("config", configNamesValidArgs); err != nil {
+		utils.HandleError(err)
+	}
+	configsUpdateCmd.Flags().String("name", "", "config name")
+	configsUpdateCmd.Flags().Bool("inheritable", false, "toggle config inheritability")
+	configsUpdateCmd.Flags().String("inherits", "", "configs to inherit (e.g. \"proj2.prd,shared.prd\")")
 	configsUpdateCmd.Flags().BoolP("yes", "y", false, "proceed without confirmation")
 	configsCmd.AddCommand(configsUpdateCmd)
 
 	configsDeleteCmd.Flags().StringP("project", "p", "", "project (e.g. backend)")
+	if err := configsDeleteCmd.RegisterFlagCompletionFunc("project", projectIDsValidArgs); err != nil {
+		utils.HandleError(err)
+	}
 	configsDeleteCmd.Flags().StringP("config", "c", "", "config (e.g. dev)")
+	if err := configsDeleteCmd.RegisterFlagCompletionFunc("config", configNamesValidArgs); err != nil {
+		utils.HandleError(err)
+	}
 	configsDeleteCmd.Flags().BoolP("yes", "y", false, "proceed without confirmation")
 	configsCmd.AddCommand(configsDeleteCmd)
 
 	configsLockCmd.Flags().StringP("project", "p", "", "project (e.g. backend)")
+	if err := configsLockCmd.RegisterFlagCompletionFunc("project", projectIDsValidArgs); err != nil {
+		utils.HandleError(err)
+	}
 	configsLockCmd.Flags().StringP("config", "c", "", "config (e.g. dev)")
+	if err := configsLockCmd.RegisterFlagCompletionFunc("config", lockedConfigNamesValidArgs); err != nil {
+		utils.HandleError(err)
+	}
 	configsLockCmd.Flags().BoolP("yes", "y", false, "proceed without confirmation")
 	configsCmd.AddCommand(configsLockCmd)
 
 	configsUnlockCmd.Flags().StringP("project", "p", "", "project (e.g. backend)")
+	if err := configsUnlockCmd.RegisterFlagCompletionFunc("project", projectIDsValidArgs); err != nil {
+		utils.HandleError(err)
+	}
 	configsUnlockCmd.Flags().StringP("config", "c", "", "config (e.g. dev)")
+	if err := configsUnlockCmd.RegisterFlagCompletionFunc("config", unlockedConfigNamesValidArgs); err != nil {
+		utils.HandleError(err)
+	}
 	configsUnlockCmd.Flags().BoolP("yes", "y", false, "proceed without confirmation")
 	configsCmd.AddCommand(configsUnlockCmd)
 
 	configsCloneCmd.Flags().StringP("project", "p", "", "project (e.g. backend)")
+	if err := configsCloneCmd.RegisterFlagCompletionFunc("project", projectIDsValidArgs); err != nil {
+		utils.HandleError(err)
+	}
 	configsCloneCmd.Flags().StringP("config", "c", "", "config (e.g. dev)")
+	if err := configsCloneCmd.RegisterFlagCompletionFunc("config", configNamesValidArgs); err != nil {
+		utils.HandleError(err)
+	}
 	configsCloneCmd.Flags().String("name", "", "new config name")
 	configsCmd.AddCommand(configsCloneCmd)
 

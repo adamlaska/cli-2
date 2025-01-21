@@ -32,7 +32,13 @@ var enclaveSetupCmd = &cobra.Command{
 
 func init() {
 	enclaveSetupCmd.Flags().StringP("project", "p", "", "enclave project (e.g. backend)")
+	if err := enclaveSetupCmd.RegisterFlagCompletionFunc("project", projectIDsValidArgs); err != nil {
+		utils.HandleError(err)
+	}
 	enclaveSetupCmd.Flags().StringP("config", "c", "", "enclave config (e.g. dev)")
+	if err := enclaveSetupCmd.RegisterFlagCompletionFunc("config", configNamesValidArgs); err != nil {
+		utils.HandleError(err)
+	}
 	enclaveSetupCmd.Flags().Bool("no-interactive", false, "do not prompt for information. if the project or config is not specified, an error will be thrown.")
 	enclaveSetupCmd.Flags().Bool("no-save-token", false, "do not save the token to the config when passed via flag or environment variable.")
 

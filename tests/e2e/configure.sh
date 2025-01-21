@@ -14,13 +14,14 @@ cleanup() {
   exit "$exit_code"
 }
 trap cleanup EXIT
+trap cleanup INT
 
 beforeAll() {
   echo "INFO: Executing '$TEST_NAME' tests"
 }
 
 beforeEach() {
-  rm -f ./temp-config
+  rm -rf ./temp-config ./temp-config-dir
 }
 
 afterAll() {
@@ -67,6 +68,30 @@ beforeEach
 "$DOPPLER_BINARY" configure set config 123 --configuration=./temp-config --scope=/ --silent
 config="$("$DOPPLER_BINARY" configure get config --configuration=./temp-config --scope=/ --plain)"
 [[ "$config" == "123" ]] || error "ERROR: config --plain contents do not match"
+
+beforeEach
+
+# test configure w/ custom config-dir
+mkdir ./temp-config-dir
+"$DOPPLER_BINARY" configure set config 123 --config-dir=./temp-config-dir --scope=/ --silent
+config="$("$DOPPLER_BINARY" configure get config --configuration=./temp-config-dir/.doppler.yaml --scope=/ --plain)"
+[[ "$config" == "123" ]] || error "ERROR: config-dir not properly used"
+
+beforeEach
+
+# test configure w/ custom config-dir from environment
+mkdir ./temp-config-dir
+DOPPLER_CONFIG_DIR=./temp-config-dir "$DOPPLER_BINARY" configure set config 123 --scope=/ --silent
+config="$(DOPPLER_CONFIG_DIR=./temp-config-dir "$DOPPLER_BINARY" configure get config --scope=/ --plain)"
+[[ "$config" == "123" ]] || error "ERROR: config-dir not properly used"
+
+beforeEach
+
+# test configure w/ custom config-dir AND custom configuration
+mkdir ./temp-config-dir
+"$DOPPLER_BINARY" configure set config 123 --config-dir=./temp-config-dir --configuration ./temp-config --scope=/ --silent
+config="$("$DOPPLER_BINARY" configure get config --configuration=./temp-config --scope=/ --plain)"
+[[ "$config" == "123" ]] || error "ERROR: configuration not properly used when specified with config-dir"
 
 beforeEach
 

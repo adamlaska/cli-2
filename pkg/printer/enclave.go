@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -131,8 +132,38 @@ func ConfigInfo(info models.ConfigInfo, jsonFlag bool) {
 		return
 	}
 
-	rows := [][]string{{info.Name, info.InitialFetchAt, info.LastFetchAt, info.CreatedAt, info.Environment, info.Project}}
-	Table([]string{"name", "initial fetch", "last fetch", "created at", "environment", "project"}, rows, TableOptions())
+	var inheritsStrings []string
+	var inheritsHeader string
+	if info.Inheritable {
+		inheritsHeader = "inherited by"
+		for _, inheritedBy := range info.InheritedBy {
+			inheritsStrings = append(inheritsStrings, fmt.Sprintf("%s.%s", inheritedBy.Project, inheritedBy.Config))
+		}
+	} else {
+		inheritsHeader = "inherits"
+		for _, inherits := range info.Inherits {
+			inheritsStrings = append(inheritsStrings, fmt.Sprintf("%s.%s", inherits.Project, inherits.Config))
+		}
+	}
+
+	var inheritsString string
+	if len(inheritsStrings) > 0 {
+		inheritsString = strings.Join(inheritsStrings, ", ")
+	} else {
+		inheritsString = "<NONE>"
+	}
+
+	rows := [][]string{{
+		info.Name,
+		info.InitialFetchAt,
+		info.LastFetchAt,
+		info.CreatedAt,
+		info.Environment,
+		info.Project,
+		strings.ToUpper(strconv.FormatBool(info.Inheritable)),
+		inheritsString,
+	}}
+	Table([]string{"name", "initial fetch", "last fetch", "created at", "environment", "project", "inheritable", inheritsHeader}, rows, TableOptions())
 }
 
 // ConfigsInfo print configs
@@ -142,12 +173,33 @@ func ConfigsInfo(info []models.ConfigInfo, jsonFlag bool) {
 		return
 	}
 
+	header := []string{"name", "initial fetch", "last fetch", "created at", "environment", "project", "inheritable", "inherits"}
 	var rows [][]string
 	for _, configInfo := range info {
-		rows = append(rows, []string{configInfo.Name, configInfo.InitialFetchAt, configInfo.LastFetchAt, configInfo.CreatedAt,
-			configInfo.Environment, configInfo.Project})
+		var inheritsStrings []string
+		for _, inherits := range configInfo.Inherits {
+			inheritsStrings = append(inheritsStrings, fmt.Sprintf("%s.%s", inherits.Project, inherits.Config))
+		}
+
+		var inheritsString string
+		if len(inheritsStrings) > 0 {
+			inheritsString = strings.Join(inheritsStrings, ", ")
+		} else {
+			inheritsString = "<NONE>"
+		}
+
+		rows = append(rows, []string{
+			configInfo.Name,
+			configInfo.InitialFetchAt,
+			configInfo.LastFetchAt,
+			configInfo.CreatedAt,
+			configInfo.Environment,
+			configInfo.Project,
+			strings.ToUpper(strconv.FormatBool(configInfo.Inheritable)),
+			inheritsString,
+		})
 	}
-	Table([]string{"name", "initial fetch", "last fetch", "created at", "environment", "project"}, rows, TableOptions())
+	Table(header, rows, TableOptions())
 }
 
 // EnvironmentsInfo print environments
@@ -202,7 +254,7 @@ func ProjectInfo(info models.ProjectInfo, jsonFlag bool) {
 }
 
 // Secrets print secrets
-func Secrets(secrets map[string]models.ComputedSecret, secretsToPrint []string, jsonFlag bool, plain bool, raw bool, copy bool) {
+func Secrets(secrets map[string]models.ComputedSecret, secretsToPrint []string, jsonFlag bool, plain bool, raw bool, copy bool, visibility bool, valueType bool) {
 	if len(secretsToPrint) == 0 {
 		for name := range secrets {
 			secretsToPrint = append(secretsToPrint, name)
@@ -214,7 +266,11 @@ func Secrets(secrets map[string]models.ComputedSecret, secretsToPrint []string, 
 		vals := []string{}
 		for _, name := range secretsToPrint {
 			if secrets[name] != (models.ComputedSecret{}) {
-				vals = append(vals, secrets[name].ComputedValue)
+				if secrets[name].ComputedValue == nil {
+					utils.HandleError(fmt.Errorf("Unable to copy restricted value to clipboard"))
+				} else {
+					vals = append(vals, *secrets[name].ComputedValue)
+				}
 			}
 		}
 
@@ -224,12 +280,29 @@ func Secrets(secrets map[string]models.ComputedSecret, secretsToPrint []string, 
 	}
 
 	if jsonFlag {
-		secretsMap := map[string]map[string]string{}
+		secretsMap := map[string]map[string]interface{}{}
 		for _, name := range secretsToPrint {
 			if secrets[name] != (models.ComputedSecret{}) {
-				secretsMap[name] = map[string]string{"computed": secrets[name].ComputedValue}
+				secretsMap[name] = map[string]interface{}{
+					"note":               secrets[name].Note,
+					"computedVisibility": secrets[name].ComputedVisibility,
+					"computedValueType":  secrets[name].ComputedValueType,
+				}
+
+				if secrets[name].ComputedValue != nil {
+					secretsMap[name]["computed"] = *secrets[name].ComputedValue
+				} else {
+					secretsMap[name]["computed"] = nil
+				}
+
 				if raw {
-					secretsMap[name]["raw"] = secrets[name].RawValue
+					secretsMap[name]["rawVisibility"] = secrets[name].RawVisibility
+					secretsMap[name]["rawValueType"] = secrets[name].RawValueType
+					if secrets[name].RawValue != nil {
+						secretsMap[name]["raw"] = *secrets[name].RawValue
+					} else {
+						secretsMap[name]["raw"] = nil
+					}
 				}
 			}
 		}
@@ -249,9 +322,17 @@ func Secrets(secrets map[string]models.ComputedSecret, secretsToPrint []string, 
 		vals := []string{}
 		for _, secret := range matchedSecrets {
 			if raw {
-				vals = append(vals, secret.RawValue)
+				if secret.RawValue != nil {
+					vals = append(vals, *secret.RawValue)
+				} else {
+					vals = append(vals, "")
+				}
 			} else {
-				vals = append(vals, secret.ComputedValue)
+				if secret.ComputedValue != nil {
+					vals = append(vals, *secret.ComputedValue)
+				} else {
+					vals = append(vals, "")
+				}
 			}
 		}
 
@@ -259,17 +340,59 @@ func Secrets(secrets map[string]models.ComputedSecret, secretsToPrint []string, 
 		return
 	}
 
-	headers := []string{"name", "value"}
-	if raw {
-		headers = append(headers, "raw")
+	headers := []string{"name"}
+	if visibility {
+		headers = append(headers, "visibility")
 	}
+	if valueType {
+		headers = append(headers, "type")
+	}
+	headers = append(headers, "value")
+	if raw {
+		if visibility {
+			headers = append(headers, "raw visibility")
+		}
+		if valueType {
+			headers = append(headers, "raw type")
+		}
+		headers = append(headers, "raw value")
+	}
+	headers = append(headers, "note")
 
 	var rows [][]string
 	for _, secret := range matchedSecrets {
-		row := []string{secret.Name, secret.ComputedValue}
-		if raw {
-			row = append(row, secret.RawValue)
+		var computedValue string
+		if secret.ComputedValue != nil {
+			computedValue = *secret.ComputedValue
+		} else {
+			computedValue = "[RESTRICTED]"
 		}
+
+		row := []string{secret.Name}
+		if visibility {
+			row = append(row, secret.ComputedVisibility)
+		}
+		if valueType {
+			row = append(row, secret.ComputedValueType.Type)
+		}
+		row = append(row, computedValue)
+		if raw {
+			var rawValue string
+			if secret.RawValue != nil {
+				rawValue = *secret.RawValue
+			} else {
+				rawValue = "[RESTRICTED]"
+			}
+			if visibility {
+				row = append(row, secret.RawVisibility)
+			}
+			if valueType {
+				row = append(row, secret.RawValueType.Type)
+			}
+			row = append(row, rawValue)
+		}
+
+		row = append(row, secret.Note)
 
 		rows = append(rows, row)
 	}
@@ -278,13 +401,7 @@ func Secrets(secrets map[string]models.ComputedSecret, secretsToPrint []string, 
 }
 
 // SecretsNames print secrets names
-func SecretsNames(secrets map[string]models.ComputedSecret, jsonFlag bool) {
-	var secretsNames []string
-	for name := range secrets {
-		secretsNames = append(secretsNames, name)
-	}
-	sort.Strings(secretsNames)
-
+func SecretsNames(secretsNames []string, jsonFlag bool) {
 	if jsonFlag {
 		secretsMap := map[string]map[string]string{}
 		for _, name := range secretsNames {
@@ -300,6 +417,22 @@ func SecretsNames(secrets map[string]models.ComputedSecret, jsonFlag bool) {
 		rows = append(rows, []string{name})
 	}
 	Table([]string{"name"}, rows, TableOptions())
+}
+
+// SecretNote print a secret's note
+func SecretNote(secret models.SecretNote, jsonFlag bool) {
+	if jsonFlag {
+		note := map[string]string{}
+		note["name"] = secret.Secret
+		note["note"] = secret.Note
+
+		JSON(note)
+		return
+	}
+
+	var rows [][]string
+	rows = append(rows, []string{secret.Secret, secret.Note})
+	Table([]string{"name", "note"}, rows, TableOptions())
 }
 
 // Settings print settings
@@ -360,4 +493,14 @@ func ConfigServiceToken(token models.ConfigServiceToken, jsonFlag bool, plain bo
 
 	rows := [][]string{{token.Name, token.Token, token.Slug, token.Project, token.Environment, token.Config, token.CreatedAt, token.ExpiresAt, token.Access}}
 	Table([]string{"name", "token", "slug", "project", "environment", "config", "created at", "expires at", "access"}, rows, TableOptions())
+}
+
+func ActorInfo(info models.ActorInfo, jsonFlag bool) {
+	if jsonFlag {
+		JSON(info)
+		return
+	}
+
+	rows := [][]string{{info.Name, info.Type, fmt.Sprintf("%s (%s)", info.Workplace.Name, info.Workplace.Slug), info.TokenPreview, info.Slug, info.CreatedAt, info.LastSeenAt}}
+	Table([]string{"name", "type", "workplace", "token preview", "slug", "created at", "last seen at"}, rows, TableOptions())
 }

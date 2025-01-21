@@ -30,14 +30,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/DopplerHQ/cli/pkg/models"
 	"github.com/DopplerHQ/cli/pkg/utils"
 	"golang.org/x/crypto/pbkdf2"
 )
 
-const Base64EncodingPrefix = "base64:"
-const HexEncodingPrefix = "hex:"
+var currentFileVersion = models.FileVersions[4].Version
 
-func deriveKey(passphrase string, salt []byte) ([]byte, []byte, error) {
+func deriveKey(passphrase string, salt []byte, numRounds int) ([]byte, []byte, error) {
 	if salt == nil {
 		salt = make([]byte, 8)
 		// http://www.ietf.org/rfc/rfc2898.txt
@@ -48,18 +48,15 @@ func deriveKey(passphrase string, salt []byte) ([]byte, []byte, error) {
 		}
 	}
 
-	return pbkdf2.Key([]byte(passphrase), salt, 50000, 32, sha256.New), salt, nil
+	return pbkdf2.Key([]byte(passphrase), salt, numRounds, 32, sha256.New), salt, nil
 }
 
 // Encrypt plaintext with a passphrase; uses pbkdf2 for key deriv and aes-256-gcm for encryption
 func Encrypt(passphrase string, plaintext []byte, encoding string) (string, error) {
-	now := time.Now()
-	key, salt, err := deriveKey(passphrase, nil)
+	key, salt, err := deriveKey(passphrase, nil, models.Pbkdf2Rounds)
 	if err != nil {
 		return "", err
 	}
-
-	utils.LogDebug(fmt.Sprintf("PBKDF2 key derivation took %d ms", time.Now().Sub(now).Milliseconds()))
 
 	iv := make([]byte, 12)
 	// http://nvlpubs.nist.gov/nistpubs/Legacy/SP/nistspecialpublication800-38d.pdf
@@ -81,17 +78,14 @@ func Encrypt(passphrase string, plaintext []byte, encoding string) (string, erro
 
 	data := aesgcm.Seal(nil, iv, plaintext, nil)
 
-	var prefix string
 	var encodedSalt string
 	var encodedIV string
 	var encodedData string
 	if encoding == "base64" {
-		prefix = Base64EncodingPrefix
 		encodedSalt = base64.StdEncoding.EncodeToString(salt)
 		encodedIV = base64.StdEncoding.EncodeToString(iv)
 		encodedData = base64.StdEncoding.EncodeToString(data)
 	} else if encoding == "hex" {
-		prefix = HexEncodingPrefix
 		encodedSalt = hex.EncodeToString(salt)
 		encodedIV = hex.EncodeToString(iv)
 		encodedData = hex.EncodeToString(data)
@@ -99,17 +93,12 @@ func Encrypt(passphrase string, plaintext []byte, encoding string) (string, erro
 		return "", errors.New("Invalid encoding, must be one of [base64, hex]")
 	}
 
-	s := fmt.Sprintf("%s%s-%s-%s", prefix, encodedSalt, encodedIV, encodedData)
+	s := fmt.Sprintf("%d:%s:%d:%s-%s-%s", currentFileVersion, encoding, models.Pbkdf2Rounds, encodedSalt, encodedIV, encodedData)
 	return s, nil
 }
 
 func decodeBase64(passphrase string, ciphertext string) ([]byte, []byte, []byte, error) {
-	// prefix is required
-	if !strings.HasPrefix(ciphertext, Base64EncodingPrefix) {
-		return []byte{}, []byte{}, []byte{}, errors.New("Invalid ciphertext")
-	}
-
-	arr := strings.SplitN(ciphertext[len(Base64EncodingPrefix):], "-", 3)
+	arr := strings.SplitN(ciphertext, "-", 3)
 	if len(arr) != 3 {
 		return []byte{}, []byte{}, []byte{}, errors.New("Invalid ciphertext")
 	}
@@ -137,12 +126,6 @@ func decodeBase64(passphrase string, ciphertext string) ([]byte, []byte, []byte,
 }
 
 func decodeHex(passphrase string, ciphertext string) ([]byte, []byte, []byte, error) {
-	// prefix is optional
-	// TODO make this required when releasing CLI v4 (DPLR-435)
-	if strings.HasPrefix(ciphertext, HexEncodingPrefix) {
-		ciphertext = ciphertext[len(HexEncodingPrefix):]
-	}
-
 	arr := strings.SplitN(string(ciphertext), "-", 3)
 	if len(arr) != 3 {
 		return []byte{}, []byte{}, []byte{}, errors.New("Invalid ciphertext")
@@ -158,12 +141,10 @@ func decodeHex(passphrase string, ciphertext string) ([]byte, []byte, []byte, er
 	if err != nil {
 		return []byte{}, []byte{}, []byte{}, err
 	}
-
 	iv, err = hex.DecodeString(arr[1])
 	if err != nil {
 		return []byte{}, []byte{}, []byte{}, err
 	}
-
 	data, err = hex.DecodeString(arr[2])
 	if err != nil {
 		return []byte{}, []byte{}, []byte{}, err
@@ -172,31 +153,53 @@ func decodeHex(passphrase string, ciphertext string) ([]byte, []byte, []byte, er
 	return salt, iv, data, nil
 }
 
-// Decrypt ciphertext with a passphrase
-func Decrypt(passphrase string, ciphertext []byte, encoding string) (string, error) {
+// Decrypt ciphertext with a passphrase.
+// Formats:
+// 1) `version:encoding:numRounds:text` (latest)
+// 2) `encoding:numRounds:text` (legacy)
+// 3) `encoding:text` (legacy)
+// 4) `text` (legacy)
+func Decrypt(passphrase string, ciphertext []byte) (string, error) {
 	var salt []byte
 	var iv []byte
 	var data []byte
-	if encoding == "base64" {
+
+	versionN, err := models.FileVersion(string(ciphertext))
+	if err != nil {
+		return "", err
+	}
+
+	version, ok := models.FileVersions[versionN]
+	if !ok {
+		return "", fmt.Errorf("Invalid version number: %d", versionN)
+	}
+
+	file, err := version.Parse(string(ciphertext))
+	if err != nil {
+		return "", err
+	}
+
+	if file.Encoding == models.Base64EncodingPrefix {
 		var err error
-		salt, iv, data, err = decodeBase64(passphrase, string(ciphertext))
-		if err != nil {
-			return "", err
-		}
-	} else if encoding == "hex" {
-		var err error
-		salt, iv, data, err = decodeHex(passphrase, string(ciphertext))
+		salt, iv, data, err = decodeBase64(passphrase, file.Ciphertext)
 		if err != nil {
 			return "", err
 		}
 	} else {
-		return "", errors.New("Invalid encoding, must be one of [base64, hex]")
+		var err error
+		salt, iv, data, err = decodeHex(passphrase, file.Ciphertext)
+		if err != nil {
+			return "", err
+		}
 	}
 
-	key, _, err := deriveKey(passphrase, salt)
+	before := time.Now()
+	key, _, err := deriveKey(passphrase, salt, file.NumRounds)
+	after := time.Now()
 	if err != nil {
 		return "", err
 	}
+	utils.LogDebug(fmt.Sprintf("PBKDF2 key derivation used %d rounds and took %d ms", file.NumRounds, after.Sub(before).Milliseconds()))
 
 	b, err := aes.NewCipher(key)
 	if err != nil {

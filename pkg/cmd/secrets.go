@@ -23,6 +23,7 @@ import (
 	"io/ioutil"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/DopplerHQ/cli/pkg/configuration"
@@ -130,6 +131,8 @@ $ doppler secrets download --format=env --no-file`,
 	Run:  downloadSecrets,
 }
 
+var validUseEnvSettings = []string{"false", "true", "override", "only"}
+var validUseEnvSettingsList = strings.Join(validUseEnvSettings, ", ")
 var secretsSubstituteCmd = &cobra.Command{
 	Use:   "substitute <filepath>",
 	Short: "Substitute secrets into a template file",
@@ -151,7 +154,15 @@ $ doppler secrets substitute template.yaml
 host: 127.0.0.1
 port: 8080
 Multiline: "Line one\r\nLine two"
-JSON Secret: "{\"logging\": \"info\"}"`,
+JSON Secret: "{\"logging\": \"info\"}"
+----------------------------------
+
+The '--use-env' flag can be used to expose environment variables to templates:
+  - 'false' (default) will not expose environment variables to templates
+  - 'true' will expose both environment variables and Doppler secrets to templates. If there is a collision, the Doppler secret will take precedence.
+  - 'override' will expose both environment variables and Doppler secrets to templates. If there is a collision, the environment variable will take precedence.
+  - 'only' will only expose environment variables to templates (and will not fetch Doppler secrets)
+`,
 	Args: cobra.ExactArgs(1),
 	Run:  substituteSecrets,
 }
@@ -159,24 +170,31 @@ JSON Secret: "{\"logging\": \"info\"}"`,
 func secrets(cmd *cobra.Command, args []string) {
 	jsonFlag := utils.OutputJSON
 	raw := utils.GetBoolFlag(cmd, "raw")
+	visibility := utils.GetBoolFlag(cmd, "visibility")
+	valueType := utils.GetBoolFlag(cmd, "type")
 	onlyNames := utils.GetBoolFlag(cmd, "only-names")
 	localConfig := configuration.LocalConfig(cmd)
 
 	utils.RequireValue("token", localConfig.Token.Value)
 
-	response, err := http.GetSecrets(localConfig.APIHost.Value, utils.GetBool(localConfig.VerifyTLS.Value, true), localConfig.Token.Value, localConfig.EnclaveProject.Value, localConfig.EnclaveConfig.Value, nil, false, 0)
-	if !err.IsNil() {
-		utils.HandleError(err.Unwrap(), err.Message)
-	}
-	secrets, parseErr := models.ParseSecrets(response)
-	if parseErr != nil {
-		utils.HandleError(parseErr, "Unable to parse API response")
-	}
-
 	if onlyNames {
-		printer.SecretsNames(secrets, jsonFlag)
+		secretNames, err := http.GetSecretNames(localConfig.APIHost.Value, utils.GetBool(localConfig.VerifyTLS.Value, true), localConfig.Token.Value, localConfig.EnclaveProject.Value, localConfig.EnclaveConfig.Value, false)
+		if !err.IsNil() {
+			utils.HandleError(err.Unwrap(), err.Message)
+		}
+
+		printer.SecretsNames(secretNames, jsonFlag)
 	} else {
-		printer.Secrets(secrets, []string{}, jsonFlag, false, raw, false)
+		response, err := http.GetSecrets(localConfig.APIHost.Value, utils.GetBool(localConfig.VerifyTLS.Value, true), localConfig.Token.Value, localConfig.EnclaveProject.Value, localConfig.EnclaveConfig.Value, nil, false, 0)
+		if !err.IsNil() {
+			utils.HandleError(err.Unwrap(), err.Message)
+		}
+		secrets, parseErr := models.ParseSecrets(response)
+		if parseErr != nil {
+			utils.HandleError(parseErr, "Unable to parse API response")
+		}
+
+		printer.Secrets(secrets, []string{}, jsonFlag, false, raw, false, visibility, valueType)
 	}
 }
 
@@ -185,6 +203,8 @@ func getSecrets(cmd *cobra.Command, args []string) {
 	plain := utils.GetBoolFlag(cmd, "plain")
 	copy := utils.GetBoolFlag(cmd, "copy")
 	raw := utils.GetBoolFlag(cmd, "raw")
+	visibility := utils.GetBoolFlag(cmd, "visibility")
+	valueType := utils.GetBoolFlag(cmd, "type")
 	exitOnMissingSecret := !utils.GetBoolFlag(cmd, "no-exit-on-missing-secret")
 	localConfig := configuration.LocalConfig(cmd)
 
@@ -221,7 +241,7 @@ func getSecrets(cmd *cobra.Command, args []string) {
 		}
 	}
 
-	printer.Secrets(secrets, args, jsonFlag, plain, raw, copy)
+	printer.Secrets(secrets, args, jsonFlag, plain, raw, copy, visibility, valueType)
 }
 
 func setSecrets(cmd *cobra.Command, args []string) {
@@ -229,10 +249,16 @@ func setSecrets(cmd *cobra.Command, args []string) {
 	raw := utils.GetBoolFlag(cmd, "raw")
 	canPromptUser := !utils.GetBoolFlag(cmd, "no-interactive")
 	localConfig := configuration.LocalConfig(cmd)
+	visibility := cmd.Flag("visibility").Value.String()
+	visibilityModified := visibility != ""
+	valueType := cmd.Flag("type").Value.String()
+	valueTypeModified := valueType != ""
 
 	utils.RequireValue("token", localConfig.Token.Value)
 
-	secrets := map[string]interface{}{}
+	var changeRequests []models.ChangeRequest
+	changeRequests = make([]models.ChangeRequest, 0)
+
 	var keys []string
 
 	// if only one arg, read from stdin
@@ -300,33 +326,72 @@ func setSecrets(cmd *cobra.Command, args []string) {
 		value := strings.Join(input, "\n")
 
 		keys = append(keys, key)
-		secrets[key] = value
+		changeRequest := models.ChangeRequest{
+			Name:  key,
+			Value: &value,
+		}
+		if visibilityModified {
+			changeRequest.Visibility = &visibility
+		}
+		if valueTypeModified {
+			changeRequest.ValueType = &models.SecretValueType{
+				Type: valueType,
+			}
+		}
+		changeRequests = append(changeRequests, changeRequest)
 	} else if len(args) == 2 && !strings.Contains(args[0], "=") {
 		// format: 'doppler secrets set KEY value'
 		key := args[0]
 		value := args[1]
 		keys = append(keys, key)
-		secrets[key] = value
+		changeRequest := models.ChangeRequest{
+			Name:  key,
+			Value: &value,
+		}
+		if visibilityModified {
+			changeRequest.Visibility = &visibility
+		}
+		if valueTypeModified {
+			changeRequest.ValueType = &models.SecretValueType{
+				Type: valueType,
+			}
+		}
+		changeRequests = append(changeRequests, changeRequest)
 	} else {
 		// format: 'doppler secrets set KEY=value'
 		for _, arg := range args {
 			secretArr := strings.SplitN(arg, "=", 2)
-			keys = append(keys, secretArr[0])
-			if len(secretArr) < 2 {
-				secrets[secretArr[0]] = ""
-			} else {
-				secrets[secretArr[0]] = secretArr[1]
+			key := secretArr[0]
+			keys = append(keys, key)
+
+			changeRequest := models.ChangeRequest{
+				Name: key,
 			}
+
+			if len(secretArr) < 2 {
+				changeRequest.Value = nil // don't change existing value
+			} else {
+				changeRequest.Value = &secretArr[1]
+			}
+			if visibilityModified {
+				changeRequest.Visibility = &visibility
+			}
+			if valueTypeModified {
+				changeRequest.ValueType = &models.SecretValueType{
+					Type: valueType,
+				}
+			}
+			changeRequests = append(changeRequests, changeRequest)
 		}
 	}
 
-	response, err := http.SetSecrets(localConfig.APIHost.Value, utils.GetBool(localConfig.VerifyTLS.Value, true), localConfig.Token.Value, localConfig.EnclaveProject.Value, localConfig.EnclaveConfig.Value, secrets)
+	response, err := http.SetSecrets(localConfig.APIHost.Value, utils.GetBool(localConfig.VerifyTLS.Value, true), localConfig.Token.Value, localConfig.EnclaveProject.Value, localConfig.EnclaveConfig.Value, nil, changeRequests)
 	if !err.IsNil() {
 		utils.HandleError(err.Unwrap(), err.Message)
 	}
 
 	if !utils.Silent {
-		printer.Secrets(response, keys, jsonFlag, false, raw, false)
+		printer.Secrets(response, keys, jsonFlag, false, raw, false, visibilityModified, valueTypeModified)
 	}
 }
 
@@ -358,7 +423,7 @@ func uploadSecrets(cmd *cobra.Command, args []string) {
 	}
 
 	if !utils.Silent {
-		printer.Secrets(response, []string{}, jsonFlag, false, raw, false)
+		printer.Secrets(response, []string{}, jsonFlag, false, raw, false, false, false)
 	}
 }
 
@@ -376,13 +441,13 @@ func deleteSecrets(cmd *cobra.Command, args []string) {
 			secrets[arg] = nil
 		}
 
-		response, err := http.SetSecrets(localConfig.APIHost.Value, utils.GetBool(localConfig.VerifyTLS.Value, true), localConfig.Token.Value, localConfig.EnclaveProject.Value, localConfig.EnclaveConfig.Value, secrets)
+		response, err := http.SetSecrets(localConfig.APIHost.Value, utils.GetBool(localConfig.VerifyTLS.Value, true), localConfig.Token.Value, localConfig.EnclaveProject.Value, localConfig.EnclaveConfig.Value, secrets, nil)
 		if !err.IsNil() {
 			utils.HandleError(err.Unwrap(), err.Message)
 		}
 
 		if !utils.Silent {
-			printer.Secrets(response, []string{}, jsonFlag, false, raw, false)
+			printer.Secrets(response, []string{}, jsonFlag, false, raw, false, false, false)
 		}
 	}
 }
@@ -443,22 +508,22 @@ func downloadSecrets(cmd *cobra.Command, args []string) {
 		legacyFallbackPath := ""
 		metadataPath := ""
 		if enableFallback {
-			fallbackPath, legacyFallbackPath = initFallbackDir(cmd, localConfig, exitOnWriteFailure)
+			fallbackPath, legacyFallbackPath = initFallbackDir(cmd, localConfig, format, nameTransformer, nil, exitOnWriteFailure)
 		}
 		if enableCache {
-			metadataPath = controllers.MetadataFilePath(localConfig.Token.Value, localConfig.EnclaveProject.Value, localConfig.EnclaveConfig.Value)
+			metadataPath = controllers.MetadataFilePath(localConfig.Token.Value, localConfig.EnclaveProject.Value, localConfig.EnclaveConfig.Value, format, nameTransformer, nil)
 		}
 
-		fallbackOpts := fallbackOptions{
-			enable:             enableFallback,
-			path:               fallbackPath,
-			legacyPath:         legacyFallbackPath,
-			readonly:           fallbackReadonly,
-			exclusive:          fallbackOnly,
-			exitOnWriteFailure: exitOnWriteFailure,
-			passphrase:         fallbackPassphrase,
+		fallbackOpts := controllers.FallbackOptions{
+			Enable:             enableFallback,
+			Path:               fallbackPath,
+			LegacyPath:         legacyFallbackPath,
+			Readonly:           fallbackReadonly,
+			Exclusive:          fallbackOnly,
+			ExitOnWriteFailure: exitOnWriteFailure,
+			Passphrase:         fallbackPassphrase,
 		}
-		secrets := fetchSecrets(localConfig, enableCache, fallbackOpts, metadataPath, nameTransformer, dynamicSecretsTTL)
+		secrets := controllers.FetchSecrets(localConfig, enableCache, fallbackOpts, metadataPath, nameTransformer, dynamicSecretsTTL, format, nil)
 
 		var err error
 		body, err = json.Marshal(secrets)
@@ -477,7 +542,7 @@ func downloadSecrets(cmd *cobra.Command, args []string) {
 		}
 
 		var apiError http.Error
-		_, _, body, apiError = http.DownloadSecrets(localConfig.APIHost.Value, utils.GetBool(localConfig.VerifyTLS.Value, true), localConfig.Token.Value, localConfig.EnclaveProject.Value, localConfig.EnclaveConfig.Value, format, nameTransformer, "", dynamicSecretsTTL)
+		_, _, body, apiError = http.DownloadSecrets(localConfig.APIHost.Value, utils.GetBool(localConfig.VerifyTLS.Value, true), localConfig.Token.Value, localConfig.EnclaveProject.Value, localConfig.EnclaveConfig.Value, format, nameTransformer, "", dynamicSecretsTTL, nil)
 		if !apiError.IsNil() {
 			utils.HandleError(apiError.Unwrap(), apiError.Message)
 		}
@@ -521,7 +586,15 @@ func downloadSecrets(cmd *cobra.Command, args []string) {
 func substituteSecrets(cmd *cobra.Command, args []string) {
 	localConfig := configuration.LocalConfig(cmd)
 
-	utils.RequireValue("token", localConfig.Token.Value)
+	useEnv := cmd.Flag("use-env").Value.String()
+	if !slices.Contains(validUseEnvSettings, useEnv) {
+		utils.HandleError(fmt.Errorf("invalid use-env option. Valid options are %s", validUseEnvSettingsList))
+	}
+
+	if useEnv != "only" {
+		// No need to require a token for env-only substitution
+		utils.RequireValue("token", localConfig.Token.Value)
+	}
 
 	var outputFilePath string
 	var err error
@@ -532,21 +605,40 @@ func substituteSecrets(cmd *cobra.Command, args []string) {
 			utils.HandleError(err, "Unable to parse output file path")
 		}
 	}
-
-	dynamicSecretsTTL := utils.GetDurationFlag(cmd, "dynamic-ttl")
-	response, responseErr := http.GetSecrets(localConfig.APIHost.Value, utils.GetBool(localConfig.VerifyTLS.Value, true), localConfig.Token.Value, localConfig.EnclaveProject.Value, localConfig.EnclaveConfig.Value, nil, true, dynamicSecretsTTL)
-	if !responseErr.IsNil() {
-		utils.HandleError(responseErr.Unwrap(), responseErr.Message)
-	}
-
-	secrets, parseErr := models.ParseSecrets(response)
-	if parseErr != nil {
-		utils.HandleError(parseErr, "Unable to parse API response")
-	}
-
 	secretsMap := map[string]string{}
-	for _, secret := range secrets {
-		secretsMap[secret.Name] = secret.ComputedValue
+	env := utils.ParseEnvStrings(os.Environ())
+
+	if useEnv != "false" {
+		// If use-env is not disabled entirely, include them from the beginning
+		for k, v := range env {
+			secretsMap[k] = v
+		}
+	}
+
+	if useEnv != "only" {
+		dynamicSecretsTTL := utils.GetDurationFlag(cmd, "dynamic-ttl")
+		response, responseErr := http.GetSecrets(localConfig.APIHost.Value, utils.GetBool(localConfig.VerifyTLS.Value, true), localConfig.Token.Value, localConfig.EnclaveProject.Value, localConfig.EnclaveConfig.Value, nil, true, dynamicSecretsTTL)
+		if !responseErr.IsNil() {
+			utils.HandleError(responseErr.Unwrap(), responseErr.Message)
+		}
+
+		secrets, parseErr := models.ParseSecrets(response)
+		if parseErr != nil {
+			utils.HandleError(parseErr, "Unable to parse API response")
+		}
+
+		for _, secret := range secrets {
+			if _, ok := env[secret.Name]; useEnv == "override" && ok {
+				// This secret collides with an environment variable and the env var is supposed to take precedence
+				continue
+			}
+			if secret.ComputedValue == nil {
+				// By not providing a default value when ComputedValue is nil (e.g. it's a restricted secret), we default
+				// to the same behavior the substituter provides if the template file contains a secret that doesn't exist.
+				continue
+			}
+			secretsMap[secret.Name] = *secret.ComputedValue
+		}
 	}
 
 	templateBody := controllers.ReadTemplateFile(args[0])
@@ -579,39 +671,87 @@ func secretNamesValidArgs(cmd *cobra.Command, args []string, toComplete string) 
 
 func init() {
 	secretsCmd.Flags().StringP("project", "p", "", "project (e.g. backend)")
+	if err := secretsCmd.RegisterFlagCompletionFunc("project", projectIDsValidArgs); err != nil {
+		utils.HandleError(err)
+	}
 	secretsCmd.Flags().StringP("config", "c", "", "config (e.g. dev)")
+	if err := secretsCmd.RegisterFlagCompletionFunc("config", configNamesValidArgs); err != nil {
+		utils.HandleError(err)
+	}
 	secretsCmd.Flags().Bool("raw", false, "print the raw secret value without processing variables")
+	secretsCmd.Flags().Bool("visibility", false, "include secret visibility in table output")
+	secretsCmd.Flags().Bool("type", false, "include secret type in table output")
 	secretsCmd.Flags().Bool("only-names", false, "only print the secret names; omit all values")
 
 	secretsGetCmd.Flags().StringP("project", "p", "", "project (e.g. backend)")
+	if err := secretsGetCmd.RegisterFlagCompletionFunc("project", projectIDsValidArgs); err != nil {
+		utils.HandleError(err)
+	}
 	secretsGetCmd.Flags().StringP("config", "c", "", "config (e.g. dev)")
+	if err := secretsGetCmd.RegisterFlagCompletionFunc("config", configNamesValidArgs); err != nil {
+		utils.HandleError(err)
+	}
 	secretsGetCmd.Flags().Bool("plain", false, "print values without formatting")
 	secretsGetCmd.Flags().Bool("copy", false, "copy the value(s) to your clipboard")
 	secretsGetCmd.Flags().Bool("raw", false, "print the raw secret value without processing variables")
+	secretsGetCmd.Flags().Bool("visibility", false, "include secret visibility in table output")
+	secretsGetCmd.Flags().Bool("type", false, "include secret type in table output")
 	secretsGetCmd.Flags().Bool("no-exit-on-missing-secret", false, "do not exit if unable to find a requested secret")
 	secretsCmd.AddCommand(secretsGetCmd)
 
 	secretsSetCmd.Flags().StringP("project", "p", "", "project (e.g. backend)")
+	if err := secretsSetCmd.RegisterFlagCompletionFunc("project", projectIDsValidArgs); err != nil {
+		utils.HandleError(err)
+	}
 	secretsSetCmd.Flags().StringP("config", "c", "", "config (e.g. dev)")
+	if err := secretsSetCmd.RegisterFlagCompletionFunc("config", configNamesValidArgs); err != nil {
+		utils.HandleError(err)
+	}
 	secretsSetCmd.Flags().Bool("raw", false, "print the raw secret value without processing variables")
 	secretsSetCmd.Flags().Bool("no-interactive", false, "do not allow entering secret value via interactive mode")
+	secretsSetCmd.Flags().String("visibility", "", "visibility (e.g. masked, unmasked, or restricted)")
+	secretsSetCmd.Flags().String("type", "", "value type (e.g. string, decimal, etc)")
 	secretsCmd.AddCommand(secretsSetCmd)
 
 	secretsUploadCmd.Flags().StringP("project", "p", "", "project (e.g. backend)")
+	if err := secretsUploadCmd.RegisterFlagCompletionFunc("project", projectIDsValidArgs); err != nil {
+		utils.HandleError(err)
+	}
 	secretsUploadCmd.Flags().StringP("config", "c", "", "config (e.g. dev)")
+	if err := secretsUploadCmd.RegisterFlagCompletionFunc("config", configNamesValidArgs); err != nil {
+		utils.HandleError(err)
+	}
 	secretsUploadCmd.Flags().Bool("raw", false, "print the raw secret value without processing variables")
 	secretsCmd.AddCommand(secretsUploadCmd)
 
 	secretsDeleteCmd.Flags().StringP("project", "p", "", "project (e.g. backend)")
+	if err := secretsDeleteCmd.RegisterFlagCompletionFunc("project", projectIDsValidArgs); err != nil {
+		utils.HandleError(err)
+	}
 	secretsDeleteCmd.Flags().StringP("config", "c", "", "config (e.g. dev)")
+	if err := secretsDeleteCmd.RegisterFlagCompletionFunc("config", configNamesValidArgs); err != nil {
+		utils.HandleError(err)
+	}
 	secretsDeleteCmd.Flags().Bool("raw", false, "print the raw secret value without processing variables")
 	secretsDeleteCmd.Flags().BoolP("yes", "y", false, "proceed without confirmation")
 	secretsCmd.AddCommand(secretsDeleteCmd)
 
 	secretsDownloadCmd.Flags().StringP("project", "p", "", "project (e.g. backend)")
+	if err := secretsDownloadCmd.RegisterFlagCompletionFunc("project", projectIDsValidArgs); err != nil {
+		utils.HandleError(err)
+	}
 	secretsDownloadCmd.Flags().StringP("config", "c", "", "config (e.g. dev)")
+	if err := secretsDownloadCmd.RegisterFlagCompletionFunc("config", configNamesValidArgs); err != nil {
+		utils.HandleError(err)
+	}
 	secretsDownloadCmd.Flags().String("format", models.JSON.String(), fmt.Sprintf("output format. one of %s", validFormatList))
-	secretsDownloadCmd.Flags().String("name-transformer", "", fmt.Sprintf("(BETA) output name transformer. one of %v", validNameTransformersList))
+	secretsDownloadCmd.Flags().String("name-transformer", "", fmt.Sprintf("output name transformer. one of %v", validNameTransformersList))
+	err := secretsDownloadCmd.RegisterFlagCompletionFunc("name-transformer", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		return models.SecretsNameTransformerTypes, cobra.ShellCompDirectiveDefault
+	})
+	if err != nil {
+		utils.HandleError(err)
+	}
 	secretsDownloadCmd.Flags().String("passphrase", "", "passphrase to use for encrypting the secrets file. the default passphrase is computed using your current configuration.")
 	secretsDownloadCmd.Flags().Bool("no-file", false, "print the response to stdout")
 	secretsDownloadCmd.Flags().Duration("dynamic-ttl", 0, "(BETA) dynamic secrets will expire after specified duration, (e.g. '3h', '15m')")
@@ -626,7 +766,14 @@ func init() {
 	secretsCmd.AddCommand(secretsDownloadCmd)
 
 	secretsSubstituteCmd.Flags().StringP("project", "p", "", "project (e.g. backend)")
+	if err := secretsSubstituteCmd.RegisterFlagCompletionFunc("project", projectIDsValidArgs); err != nil {
+		utils.HandleError(err)
+	}
 	secretsSubstituteCmd.Flags().StringP("config", "c", "", "config (e.g. dev)")
+	if err := secretsSubstituteCmd.RegisterFlagCompletionFunc("config", configNamesValidArgs); err != nil {
+		utils.HandleError(err)
+	}
+	secretsSubstituteCmd.Flags().String("use-env", "false", fmt.Sprintf("setting for how to use environment variables passed to 'doppler secrets substitute'. One of: %s (see help ext for details)", validUseEnvSettingsList))
 	secretsSubstituteCmd.Flags().String("output", "", "path to the output file. by default the rendered text will be written to stdout.")
 	secretsSubstituteCmd.Flags().Duration("dynamic-ttl", 0, "(BETA) dynamic secrets will expire after specified duration, (e.g. '3h', '15m')")
 	secretsCmd.AddCommand(secretsSubstituteCmd)

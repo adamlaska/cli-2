@@ -16,10 +16,23 @@ limitations under the License.
 
 package models
 
-// RepoConfig holds all repo configuration
+// Config struct represents the basic project setup values
+type ProjectConfig struct {
+	Config  string `yaml:"config"`
+	Project string `yaml:"project"`
+	Path    string `yaml:"path"`
+}
+
+// RepoConfig struct representing legacy doppler.yaml setup file format
+// that only supported a single project and config
 type RepoConfig struct {
-	Setup struct {
-		Config  string `yaml:"config"`
-		Project string `yaml:"project"`
-	} `yaml:"setup"`
+	Setup ProjectConfig `yaml:"setup"`
+	Flags Flags         `yaml:"flags"`
+}
+
+// MultiRepoConfig struct supports doppler.yaml files containing multiple
+// project and config combos
+type MultiRepoConfig struct {
+	Setup []ProjectConfig `yaml:"setup"`
+	Flags Flags           `yaml:"flags"`
 }

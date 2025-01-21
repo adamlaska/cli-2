@@ -17,6 +17,7 @@ package cmd
 
 import (
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/DopplerHQ/cli/pkg/configuration"
@@ -50,7 +51,7 @@ var configsTokensCreateCmd = &cobra.Command{
 }
 
 var configsTokensRevokeCmd = &cobra.Command{
-	Use:               "revoke [slug]",
+	Use:               "revoke [slug|token]",
 	Aliases:           []string{"delete"},
 	Short:             "Revoke a service token from a config",
 	Args:              cobra.MaximumNArgs(1),
@@ -137,13 +138,30 @@ func revokeConfigsTokens(cmd *cobra.Command, args []string) {
 
 	utils.RequireValue("token", localConfig.Token.Value)
 
-	slug := cmd.Flag("slug").Value.String()
-	if len(args) > 0 {
-		slug = args[0]
-	}
-	utils.RequireValue("slug", slug)
+	slugFlagUsed := cmd.Flag("slug").Value.String() != ""
 
-	err := http.DeleteConfigServiceToken(localConfig.APIHost.Value, utils.GetBool(localConfig.VerifyTLS.Value, true), localConfig.Token.Value, localConfig.EnclaveProject.Value, localConfig.EnclaveConfig.Value, slug)
+	// users can revoke tokens via slug or via the raw token value (i.e. the secret)
+	var slug string
+	var token string
+	if len(args) > 0 {
+		if slugFlagUsed {
+			utils.LogWarning("slug flag is ignored when arg is specified")
+		}
+
+		value := args[0]
+		isSlug := utils.IsValidUUID(value)
+		if isSlug {
+			slug = value
+		} else {
+			token = value
+		}
+	} else if slugFlagUsed {
+		slug = cmd.Flag("slug").Value.String()
+	}
+
+	utils.RequireValue("slug or token", fmt.Sprintf("%s%s", slug, token))
+
+	err := http.DeleteConfigServiceToken(localConfig.APIHost.Value, utils.GetBool(localConfig.VerifyTLS.Value, true), localConfig.Token.Value, localConfig.EnclaveProject.Value, localConfig.EnclaveConfig.Value, slug, token)
 	if !err.IsNil() {
 		utils.HandleError(err.Unwrap(), err.Message)
 	}
@@ -171,25 +189,61 @@ func configTokenSlugsValidArgs(cmd *cobra.Command, args []string, toComplete str
 
 func init() {
 	configsTokensCmd.Flags().StringP("project", "p", "", "project (e.g. backend)")
+	if err := configsTokensCmd.RegisterFlagCompletionFunc("project", projectIDsValidArgs); err != nil {
+		utils.HandleError(err)
+	}
 	configsTokensCmd.Flags().StringP("config", "c", "", "config (e.g. dev)")
+	if err := configsTokensCmd.RegisterFlagCompletionFunc("config", configNamesValidArgs); err != nil {
+		utils.HandleError(err)
+	}
 	configsCmd.AddCommand(configsTokensCmd)
 
 	configsTokensGetCmd.Flags().String("slug", "", "service token slug")
+	if err := configsTokensGetCmd.RegisterFlagCompletionFunc("slug", configTokenSlugsValidArgs); err != nil {
+		utils.HandleError(err)
+	}
 	configsTokensGetCmd.Flags().StringP("project", "p", "", "project (e.g. backend)")
+	if err := configsTokensGetCmd.RegisterFlagCompletionFunc("project", projectIDsValidArgs); err != nil {
+		utils.HandleError(err)
+	}
 	configsTokensGetCmd.Flags().StringP("config", "c", "", "config (e.g. dev)")
+	if err := configsTokensGetCmd.RegisterFlagCompletionFunc("config", configNamesValidArgs); err != nil {
+		utils.HandleError(err)
+	}
 	configsTokensCmd.AddCommand(configsTokensGetCmd)
 
 	configsTokensCreateCmd.Flags().String("name", "", "service token name")
 	configsTokensCreateCmd.Flags().StringP("project", "p", "", "project (e.g. backend)")
+	if err := configsTokensCreateCmd.RegisterFlagCompletionFunc("project", projectIDsValidArgs); err != nil {
+		utils.HandleError(err)
+	}
 	configsTokensCreateCmd.Flags().StringP("config", "c", "", "config (e.g. dev)")
+	if err := configsTokensCreateCmd.RegisterFlagCompletionFunc("config", configNamesValidArgs); err != nil {
+		utils.HandleError(err)
+	}
 	configsTokensCreateCmd.Flags().Bool("plain", false, "print only the token, without formatting")
 	configsTokensCreateCmd.Flags().Bool("copy", false, "copy the token to your clipboard")
 	configsTokensCreateCmd.Flags().Duration("max-age", 0, "token will expire after specified duration, (e.g. '3h', '15m')")
 	configsTokensCreateCmd.Flags().String("access", "read", "the token's access. one of [\"read\", \"read/write\"]")
+	err := configsTokensCreateCmd.RegisterFlagCompletionFunc("access", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		return []string{"read", "read/write"}, cobra.ShellCompDirectiveDefault
+	})
+	if err != nil {
+		utils.HandleError(err)
+	}
 	configsTokensCmd.AddCommand(configsTokensCreateCmd)
 
 	configsTokensRevokeCmd.Flags().String("slug", "", "service token slug")
+	if err := configsTokensRevokeCmd.RegisterFlagCompletionFunc("slug", configTokenSlugsValidArgs); err != nil {
+		utils.HandleError(err)
+	}
 	configsTokensRevokeCmd.Flags().StringP("project", "p", "", "project (e.g. backend)")
+	if err := configsTokensRevokeCmd.RegisterFlagCompletionFunc("project", projectIDsValidArgs); err != nil {
+		utils.HandleError(err)
+	}
 	configsTokensRevokeCmd.Flags().StringP("config", "c", "", "config (e.g. dev)")
+	if err := configsTokensRevokeCmd.RegisterFlagCompletionFunc("config", configNamesValidArgs); err != nil {
+		utils.HandleError(err)
+	}
 	configsTokensCmd.AddCommand(configsTokensRevokeCmd)
 }

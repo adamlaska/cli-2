@@ -71,7 +71,13 @@ var enclaveProjectsUpdateCmd = &cobra.Command{
 }
 
 func init() {
+	enclaveProjectsCmd.Flags().IntP("number", "n", 100, "max number of projects to display")
+	enclaveProjectsCmd.Flags().Int("page", 1, "page to display")
+
 	enclaveProjectsGetCmd.Flags().StringP("project", "p", "", "enclave project (e.g. backend)")
+	if err := enclaveProjectsGetCmd.RegisterFlagCompletionFunc("project", projectIDsValidArgs); err != nil {
+		utils.HandleError(err)
+	}
 	enclaveProjectsCmd.AddCommand(enclaveProjectsGetCmd)
 
 	enclaveProjectsCreateCmd.Flags().String("name", "", "project name")
@@ -80,9 +86,15 @@ func init() {
 
 	enclaveProjectsDeleteCmd.Flags().BoolP("yes", "y", false, "proceed without confirmation")
 	enclaveProjectsDeleteCmd.Flags().StringP("project", "p", "", "enclave project (e.g. backend)")
+	if err := enclaveProjectsDeleteCmd.RegisterFlagCompletionFunc("project", projectIDsValidArgs); err != nil {
+		utils.HandleError(err)
+	}
 	enclaveProjectsCmd.AddCommand(enclaveProjectsDeleteCmd)
 
 	enclaveProjectsUpdateCmd.Flags().StringP("project", "p", "", "enclave project (e.g. backend)")
+	if err := enclaveProjectsUpdateCmd.RegisterFlagCompletionFunc("project", projectIDsValidArgs); err != nil {
+		utils.HandleError(err)
+	}
 	enclaveProjectsUpdateCmd.Flags().String("name", "", "project name")
 	if err := enclaveProjectsUpdateCmd.MarkFlagRequired("name"); err != nil {
 		utils.HandleError(err)

@@ -1,3 +1,4 @@
+version: 2
 project_name: doppler
 
 before:
@@ -38,9 +39,16 @@ builds:
 
 archives:
 -
-  replacements:
-    darwin: macOS
-    386: i386
+  name_template: >-
+    {{ .ProjectName }}_
+    {{- .Version }}_
+    {{- if eq .Os "darwin" }}macOS
+    {{- else }}{{ .Os }}{{ end }}_
+    {{- if eq .Arch "386" }}i386
+    {{- else }}{{ .Arch }}{{ end }}
+    {{- with .Arm }}v{{ . }}{{ end }}
+    {{- with .Mips }}_{{ . }}{{ end }}
+    {{- if not (eq .Amd64 "v1") }}{{ .Amd64 }}{{ end }}
   format_overrides:
     - goos: windows
       format: zip
@@ -57,9 +65,9 @@ release:
   footer: |
     ## Docker images
 
-    - `docker pull dopplerhq/cli:{{ .Version }}"`
+    - `docker pull dopplerhq/cli:{{ .Version }}`
     - `docker pull dopplerhq/cli:{{ .Major }}.{{ .Minor }}`
-    - `docker pull dopplerhq/cli:{{ .Major }}"`
+    - `docker pull dopplerhq/cli:{{ .Major }}`
 
 checksum:
   name_template: 'checksums.txt'
@@ -120,13 +128,13 @@ dockers:
 
 brews:
   - name: doppler
-    tap:
+    repository:
       owner: DopplerHQ
       name: homebrew-doppler
     commit_author:
       name: "Doppler Bot"
       email: bot@doppler.com
-    folder: Formula
+    directory: Formula
     homepage: "https://doppler.com"
     description: "The official Doppler CLI for managing your secrets"
     install: |-
@@ -137,21 +145,50 @@ brews:
     test: |
       system "#{bin}/doppler --version"
 
-scoop:
-  bucket:
-    owner: DopplerHQ
-    name: scoop-doppler
-  commit_author:
-    name: "Doppler Bot"
-    email: bot@doppler.com
-  homepage: "https://doppler.com"
-  description: "The official Doppler CLI for managing your secrets"
-  license: Apache-2.0
+scoops:
+  - repository:
+      owner: DopplerHQ
+      name: scoop-doppler
+    commit_author:
+      name: "Doppler Bot"
+      email: bot@doppler.com
+    homepage: "https://doppler.com"
+    description: "The official Doppler CLI for managing your secrets"
+    license: Apache-2.0
+
+winget:
+  - name: doppler
+    publisher: Doppler
+    short_description: "The official Doppler CLI for managing your secrets"
+    license: Apache-2.0
+    publisher_url: https://doppler.com
+    commit_author:
+      name: "Doppler Bot"
+      email: bot@doppler.com
+    homepage: "https://doppler.com"
+    skip_upload: auto
+    repository:
+      owner: DopplerHQ
+      name: winget-pkgs
+      branch: "cli-{{.Version}}"
+      pull_request:
+        enabled: true
+        base:
+          owner: microsoft
+          name: winget-pkgs
+          branch: master
 
 nfpms:
   - id: doppler
-    replacements:
-      386: i386
+    file_name_template: >-
+      {{ .PackageName }}_
+      {{- .Version }}_
+      {{- .Os }}_
+      {{- if eq .Arch "386" }}i386
+      {{- else }}{{ .Arch }}{{ end }}
+      {{- with .Arm }}v{{ . }}{{ end }}
+      {{- with .Mips }}_{{ . }}{{ end }}
+      {{- if not (eq .Amd64 "v1") }}{{ .Amd64 }}{{ end }}
     homepage: "https://doppler.com"
     maintainer: Doppler Bot <bot@doppler.com>
     description: "The official Doppler CLI for managing your secrets"
@@ -180,4 +217,4 @@ blobs:
   -
     provider: gs
     bucket: dopplerhq_cli_releases
-    folder: "{{ .Tag }}"
+    directory: "{{ .Tag }}"

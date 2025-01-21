@@ -17,7 +17,7 @@ jobs:
     - name: Set up Go
       uses: actions/setup-go@v3
       with:
-        go-version: '1.19'
+        go-version: '1.21'
         check-latest: true
     - name: Checkout
       uses: actions/checkout@v1
@@ -27,18 +27,18 @@ jobs:
       uses: goreleaser/goreleaser-action@v1
       with:
         version: latest
-        args: release --snapshot --skip-publish --skip-sign
+        args: release --snapshot --skip=publish,sign
       env:
         GOPATH: ${{ runner.workspace }}
     - uses: actions/upload-artifact@master
       with:
         name: macOS build (amd64)
-        path: ./dist/doppler_darwin_amd64/doppler
+        path: ./dist/doppler_darwin_amd64_v1/doppler
+    - uses: actions/upload-artifact@master
+      with:
+        name: macOS build (arm64)
+        path: ./dist/doppler_darwin_arm64/doppler
     - uses: actions/upload-artifact@master
       with:
         name: Linux build (amd64)
-        path: ./dist/doppler_linux_amd64/doppler
-    - uses: actions/upload-artifact@master
-      with:
-        name: Windows build (amd64)
-        path: ./dist/doppler_windows_amd64/doppler.exe
+        path: ./dist/doppler_linux_amd64_v1/doppler

@@ -23,6 +23,9 @@ import (
 type ConfigFile struct {
 	Scoped       map[string]FileScopedOptions `yaml:"scoped"`
 	VersionCheck VersionCheck                 `yaml:"version-check"`
+	Analytics    AnalyticsOptions             `yaml:"analytics,omitempty"`
+	TUI          TUIOptions                   `yaml:"tui"`
+	Flags        Flags                        `yaml:"flags,omitempty"`
 }
 
 // FileScopedOptions config options
@@ -39,6 +42,16 @@ type FileScopedOptions struct {
 type VersionCheck struct {
 	LatestVersion string    `yaml:"latest-version,omitempty"`
 	CheckedAt     time.Time `yaml:"checked-at,omitempty"`
+}
+
+type AnalyticsOptions struct {
+	// we use the key 'disable' rather than 'enable' because blank value are automatically parsed as 'false',
+	// and we want this feature to be enabled by default
+	Disable bool `yaml:"disable"`
+}
+
+type TUIOptions struct {
+	IntroVersionSeen int `yaml:"introVersionSeen"`
 }
 
 // ScopedOptions options with their scope

@@ -25,7 +25,7 @@ import (
 
 var openCmd = &cobra.Command{
 	Use:   "open",
-	Short: "open the Doppler dashboard",
+	Short: "Open the Doppler dashboard",
 	Args:  cobra.NoArgs,
 	Run: func(cmd *cobra.Command, args []string) {
 		localConfig := configuration.LocalConfig(cmd)
@@ -38,7 +38,7 @@ var openCmd = &cobra.Command{
 
 var openDashboardCmd = &cobra.Command{
 	Use:   "dashboard",
-	Short: "open the Doppler dashboard",
+	Short: "Open the Doppler dashboard",
 	Args:  cobra.NoArgs,
 	Run: func(cmd *cobra.Command, args []string) {
 		localConfig := configuration.LocalConfig(cmd)
@@ -87,13 +87,25 @@ var openDocsCmd = &cobra.Command{
 
 func init() {
 	openDashboardCmd.Flags().StringP("project", "p", "", "enclave project (e.g. backend)")
+	if err := openDashboardCmd.RegisterFlagCompletionFunc("project", projectIDsValidArgs); err != nil {
+		utils.HandleError(err)
+	}
 	openDashboardCmd.Flags().StringP("config", "c", "", "enclave config (e.g. dev)")
+	if err := openDashboardCmd.RegisterFlagCompletionFunc("config", configNamesValidArgs); err != nil {
+		utils.HandleError(err)
+	}
 	openCmd.AddCommand(openDashboardCmd)
 	openCmd.AddCommand(openStatusCmd)
 	openCmd.AddCommand(openGithubCmd)
 	openCmd.AddCommand(openDocsCmd)
 
 	openCmd.Flags().StringP("project", "p", "", "enclave project (e.g. backend)")
+	if err := openCmd.RegisterFlagCompletionFunc("project", projectIDsValidArgs); err != nil {
+		utils.HandleError(err)
+	}
 	openCmd.Flags().StringP("config", "c", "", "enclave config (e.g. dev)")
+	if err := openCmd.RegisterFlagCompletionFunc("config", configNamesValidArgs); err != nil {
+		utils.HandleError(err)
+	}
 	rootCmd.AddCommand(openCmd)
 }
