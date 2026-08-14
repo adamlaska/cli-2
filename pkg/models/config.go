@@ -45,8 +45,7 @@ type VersionCheck struct {
 }
 
 type AnalyticsOptions struct {
-	// we use the key 'disable' rather than 'enable' because blank value are automatically parsed as 'false',
-	// and we want this feature to be enabled by default
+	// Deprecated: retained only for interop with CLI versions that predate the 'flags' property.
 	Disable bool `yaml:"disable"`
 }
 
